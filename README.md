@@ -1,2 +1,2 @@
 # IAPC-Project-DevDocs-AI
-IAPC course project - 2026
+Version-Aware RAG Assistant for Java and Spring Developers
