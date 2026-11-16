@@ -17,5 +17,22 @@ services:
       timeout: 5s
       retries: 5
 
+  document-service:
+    build:
+      context: ./document-service
+      dockerfile: Dockerfile
+    container_name: devdocs-document-service
+    restart: unless-stopped
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/${POSTGRES_DB}
+      DB_USERNAME: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      SERVER_PORT: 8081
+    ports:
+      - "8081:8081"
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   devdocs_pgdata:
