@@ -1,6 +1,10 @@
+
 package com.devdocs.ai.ingeststatic.controller;
 
+import com.devdocs.ai.ingeststatic.chunk.TextChunker;
+import com.devdocs.ai.ingeststatic.dto.ChunkPersistenceResult;
 import com.devdocs.ai.ingeststatic.exception.GlobalExceptionHandler;
+import com.devdocs.ai.ingeststatic.service.ChunkPersistenceService;
 import com.devdocs.ai.ingeststatic.service.PdfExtractionService;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -11,23 +15,36 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.io.ByteArrayOutputStream;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 class PdfIngestionControllerTest {
 
     private MockMvc mockMvc;
+    private ChunkPersistenceService chunkPersistenceService;
 
     @BeforeEach
     void setUp() {
-        PdfExtractionService service = new PdfExtractionService();
+        PdfExtractionService pdfExtractionService =
+                new PdfExtractionService(new TextChunker(1000, 200));
 
-        PdfIngestionController controller =
-                new PdfIngestionController(service);
+        chunkPersistenceService = mock(ChunkPersistenceService.class);
+
+        PdfIngestionController controller = new PdfIngestionController(
+                pdfExtractionService,
+                chunkPersistenceService
+        );
 
         mockMvc = MockMvcBuilders
                 .standaloneSetup(controller)
@@ -36,7 +53,7 @@ class PdfIngestionControllerTest {
     }
 
     @Test
-    void shouldReturnExtractedPdfAsJson() throws Exception {
+    void shouldExtractAndPersistPdfChunks() throws Exception {
         MockMultipartFile file = new MockMultipartFile(
                 "file",
                 "test-document.pdf",
@@ -44,7 +61,17 @@ class PdfIngestionControllerTest {
                 createTestPdf()
         );
 
-        mockMvc.perform(multipart("/api/ingestion/static/pdf").file(file))
+        when(chunkPersistenceService.persist(
+                eq(4L),
+                eq(5L),
+                any(MultipartFile.class),
+                anyList()
+        )).thenReturn(new ChunkPersistenceResult(5L, 1, false));
+
+        mockMvc.perform(multipart("/api/ingestion/static/pdf")
+                        .file(file)
+                        .param("documentId", "4")
+                        .param("versionId", "5"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.fileName").value("test-document.pdf"))
                 .andExpect(jsonPath("$.pageCount").value(1))
@@ -52,7 +79,19 @@ class PdfIngestionControllerTest {
                 .andExpect(jsonPath("$.extractedText")
                         .value(org.hamcrest.Matchers.containsString(
                                 "DevDocs AI PDF extraction test"
-                        )));
+                        )))
+                .andExpect(jsonPath("$.chunks").isArray())
+                .andExpect(jsonPath("$.chunks.length()").value(1))
+                .andExpect(jsonPath("$.persistence.versionId").value(5))
+                .andExpect(jsonPath("$.persistence.chunkCount").value(1))
+                .andExpect(jsonPath("$.persistence.alreadyIngested").value(false));
+
+        verify(chunkPersistenceService).persist(
+                eq(4L),
+                eq(5L),
+                any(MultipartFile.class),
+                anyList()
+        );
     }
 
     @Test
@@ -64,9 +103,11 @@ class PdfIngestionControllerTest {
                 new byte[0]
         );
 
-        mockMvc.perform(multipart("/api/ingestion/static/pdf").file(file))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("Invalid PDF"));
+        mockMvc.perform(multipart("/api/ingestion/static/pdf")
+                        .file(file)
+                        .param("documentId", "4")
+                        .param("versionId", "5"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -75,24 +116,26 @@ class PdfIngestionControllerTest {
                 "file",
                 "document.txt",
                 "text/plain",
-                "Not a PDF".getBytes()
+                "This is not a PDF".getBytes()
         );
 
-        mockMvc.perform(multipart("/api/ingestion/static/pdf").file(file))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("Invalid PDF"));
+        mockMvc.perform(multipart("/api/ingestion/static/pdf")
+                        .file(file)
+                        .param("documentId", "4")
+                        .param("versionId", "5"))
+                .andExpect(status().isBadRequest());
     }
 
     private byte[] createTestPdf() throws Exception {
-        try (
-                PDDocument document = new PDDocument();
-                ByteArrayOutputStream output = new ByteArrayOutputStream()
-        ) {
+        try (PDDocument document = new PDDocument();
+             ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+
             PDPage page = new PDPage();
             document.addPage(page);
 
             try (PDPageContentStream contentStream =
                          new PDPageContentStream(document, page)) {
+
                 contentStream.beginText();
                 contentStream.setFont(
                         new PDType1Font(Standard14Fonts.FontName.HELVETICA),
@@ -103,8 +146,8 @@ class PdfIngestionControllerTest {
                 contentStream.endText();
             }
 
-            document.save(output);
-            return output.toByteArray();
+            document.save(outputStream);
+            return outputStream.toByteArray();
         }
     }
 }

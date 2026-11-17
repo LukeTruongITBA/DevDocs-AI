@@ -1,6 +1,13 @@
-﻿spring:
+﻿
+spring:
   application:
     name: ingest-static
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5433/devdocs}
+    username: ${DB_USERNAME:devdocs}
+    password: ${DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
 
 server:
   port: ${SERVER_PORT:8082}
@@ -13,3 +20,7 @@ management:
   endpoint:
     health:
       show-details: always
+app:
+  ingestion:
+    chunk-size: 1000
+    chunk-overlap: 200

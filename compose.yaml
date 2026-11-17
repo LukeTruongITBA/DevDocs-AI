@@ -34,6 +34,7 @@ services:
       db:
         condition: service_healthy
 
+
   ingest-static:
     build:
       context: ./ingest-static
@@ -41,9 +42,16 @@ services:
     container_name: devdocs-ingest-static
     restart: unless-stopped
     environment:
+      DB_URL: jdbc:postgresql://db:5432/${POSTGRES_DB}
+      DB_USERNAME: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
       SERVER_PORT: 8082
     ports:
       - "8082:8082"
+    depends_on:
+      db:
+        condition: service_healthy
+
 
 volumes:
   devdocs_pgdata:
