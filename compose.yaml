@@ -51,7 +51,45 @@ services:
     depends_on:
       db:
         condition: service_healthy
+  ingest-dynamic:
+    build:
+      context: ./ingest-dynamic
+      dockerfile: Dockerfile
+    container_name: devdocs-ingest-dynamic
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: 8083
+    ports:
+      - "8083:8083"
+    depends_on:
+      db:
+        condition: service_healthy
+  pre-retrieval-service:
+    build:
+      context: ./pre-retrieval-service
+      dockerfile: Dockerfile
+    container_name: devdocs-pre-retrieval-service
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: 8084
+    ports:
+      - "8084:8084"
+    depends_on:
+      db:
+        condition: service_healthy
 
-
+  post-retrieval-service:
+    build:
+      context: ./post-retrieval-service
+      dockerfile: Dockerfile
+    container_name: devdocs-post-retrieval-service
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: 8085
+    ports:
+      - "8085:8085"
+    depends_on:
+      db:
+        condition: service_healthy
 volumes:
   devdocs_pgdata:
