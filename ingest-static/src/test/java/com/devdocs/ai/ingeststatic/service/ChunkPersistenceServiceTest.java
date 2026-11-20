@@ -1,11 +1,12 @@
-
 package com.devdocs.ai.ingeststatic.service;
 
+import com.devdocs.ai.ingeststatic.chunk.ChunkEmbedding;
 import com.devdocs.ai.ingeststatic.chunk.TextChunk;
 import com.devdocs.ai.ingeststatic.dto.ChunkPersistenceResult;
 import com.devdocs.ai.ingeststatic.dto.DocumentVersionInfo;
 import com.devdocs.ai.ingeststatic.repository.ChunkRepository;
 import com.devdocs.ai.ingeststatic.repository.DocumentVersionRepository;
+import com.devdocs.ai.ingeststatic.repository.StoredChunkInfo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
@@ -25,6 +26,8 @@ class ChunkPersistenceServiceTest {
 
     private DocumentVersionRepository documentVersionRepository;
     private ChunkRepository chunkRepository;
+    private EmbeddingService embeddingService;
+    private ChunkWriteService chunkWriteService;
     private ChunkPersistenceService service;
 
     private final byte[] pdfBytes =
@@ -34,29 +37,44 @@ class ChunkPersistenceServiceTest {
             new TextChunk(0, 1, "Test chunk content", "chunk-checksum-001")
     );
 
+    private final List<ChunkEmbedding> embeddings = List.of(
+            new ChunkEmbedding(0, List.of(0.1, 0.2, 0.3))
+    );
+
     @BeforeEach
     void setUp() {
         documentVersionRepository = mock(DocumentVersionRepository.class);
         chunkRepository = mock(ChunkRepository.class);
+        embeddingService = mock(EmbeddingService.class);
+        chunkWriteService = mock(ChunkWriteService.class);
 
         service = new ChunkPersistenceService(
                 documentVersionRepository,
-                chunkRepository
+                chunkRepository,
+                embeddingService,
+                chunkWriteService
         );
     }
 
     @Test
-    void shouldPersistChunksWhenVersionHasNoExistingChunks() throws Exception {
+    void shouldGenerateAndPersistEmbeddingsForNewChunks() throws Exception {
         DocumentVersionInfo version = createVersion("STATIC");
 
         when(documentVersionRepository.findByVersionIdAndDocumentId(5L, 4L))
                 .thenReturn(Optional.of(version));
 
-        when(chunkRepository.countByVersionId(5L))
-                .thenReturn(0L, 1L);
+        when(chunkRepository.findByVersionId(5L))
+                .thenReturn(List.of());
 
-        when(chunkRepository.insertAll(version, chunks, "https://example.com/test.pdf"))
-                .thenReturn(1);
+        when(embeddingService.embed(chunks))
+                .thenReturn(embeddings);
+
+        when(chunkWriteService.insertChunksWithEmbeddings(
+                version,
+                chunks,
+                embeddings,
+                "https://example.com/test.pdf"
+        )).thenReturn(1);
 
         ChunkPersistenceResult result = service.persist(
                 4L,
@@ -69,22 +87,33 @@ class ChunkPersistenceServiceTest {
         assertEquals(1, result.chunkCount());
         assertFalse(result.alreadyIngested());
 
-        verify(chunkRepository).insertAll(
+        verify(embeddingService).embed(chunks);
+
+        verify(chunkWriteService).insertChunksWithEmbeddings(
                 version,
                 chunks,
+                embeddings,
                 "https://example.com/test.pdf"
         );
     }
 
     @Test
-    void shouldNotInsertChunksAgainWhenVersionWasAlreadyIngested() throws Exception {
+    void shouldNotGenerateEmbeddingsAgainWhenChunksAlreadyExist()
+            throws Exception {
+
         DocumentVersionInfo version = createVersion("STATIC");
 
         when(documentVersionRepository.findByVersionIdAndDocumentId(5L, 4L))
                 .thenReturn(Optional.of(version));
 
-        when(chunkRepository.countByVersionId(5L))
-                .thenReturn(1L);
+        when(chunkRepository.findByVersionId(5L))
+                .thenReturn(List.of(
+                        new StoredChunkInfo(
+                                0,
+                                "chunk-checksum-001",
+                                false
+                        )
+                ));
 
         ChunkPersistenceResult result = service.persist(
                 4L,
@@ -97,8 +126,61 @@ class ChunkPersistenceServiceTest {
         assertEquals(1, result.chunkCount());
         assertTrue(result.alreadyIngested());
 
-        verify(chunkRepository, never()).insertAll(
+        verify(embeddingService, never()).embed(anyList());
+
+        verify(chunkWriteService, never()).insertChunksWithEmbeddings(
                 any(),
+                anyList(),
+                anyList(),
+                anyString()
+        );
+
+        verify(chunkWriteService, never()).updateMissingEmbeddings(
+                anyLong(),
+                anyList()
+        );
+    }
+
+    @Test
+    void shouldGenerateAndUpdateMissingEmbeddings() throws Exception {
+        DocumentVersionInfo version = createVersion("STATIC");
+
+        when(documentVersionRepository.findByVersionIdAndDocumentId(5L, 4L))
+                .thenReturn(Optional.of(version));
+
+        when(chunkRepository.findByVersionId(5L))
+                .thenReturn(List.of(
+                        new StoredChunkInfo(
+                                0,
+                                "chunk-checksum-001",
+                                true
+                        )
+                ));
+
+        when(embeddingService.embed(chunks))
+                .thenReturn(embeddings);
+
+        ChunkPersistenceResult result = service.persist(
+                4L,
+                5L,
+                createPdfFile(),
+                chunks
+        );
+
+        assertEquals(5L, result.versionId());
+        assertEquals(1, result.chunkCount());
+        assertTrue(result.alreadyIngested());
+
+        verify(embeddingService).embed(chunks);
+
+        verify(chunkWriteService).updateMissingEmbeddings(
+                5L,
+                embeddings
+        );
+
+        verify(chunkWriteService, never()).insertChunksWithEmbeddings(
+                any(),
+                anyList(),
                 anyList(),
                 anyString()
         );
@@ -122,11 +204,8 @@ class ChunkPersistenceServiceTest {
                 service.persist(4L, 5L, createPdfFile(), chunks)
         );
 
-        verify(chunkRepository, never()).insertAll(
-                any(),
-                anyList(),
-                anyString()
-        );
+        verifyNoInteractions(embeddingService);
+        verifyNoInteractions(chunkWriteService);
     }
 
     @Test
@@ -138,11 +217,8 @@ class ChunkPersistenceServiceTest {
                 service.persist(4L, 5L, createPdfFile(), chunks)
         );
 
-        verify(chunkRepository, never()).insertAll(
-                any(),
-                anyList(),
-                anyString()
-        );
+        verifyNoInteractions(embeddingService);
+        verifyNoInteractions(chunkWriteService);
     }
 
     @Test
@@ -156,35 +232,62 @@ class ChunkPersistenceServiceTest {
                 service.persist(4L, 5L, createPdfFile(), chunks)
         );
 
-        verify(chunkRepository, never()).insertAll(
-                any(),
-                anyList(),
-                anyString()
-        );
+        verifyNoInteractions(embeddingService);
+        verifyNoInteractions(chunkWriteService);
     }
 
     @Test
-    void shouldRejectWhenExistingChunkCountDoesNotMatch() throws Exception {
+    void shouldRejectWhenExistingChunkCountDoesNotMatch()
+            throws Exception {
+
         DocumentVersionInfo version = createVersion("STATIC");
 
         when(documentVersionRepository.findByVersionIdAndDocumentId(5L, 4L))
                 .thenReturn(Optional.of(version));
 
-        when(chunkRepository.countByVersionId(5L))
-                .thenReturn(2L);
+        when(chunkRepository.findByVersionId(5L))
+                .thenReturn(List.of(
+                        new StoredChunkInfo(0, "checksum-0", false),
+                        new StoredChunkInfo(1, "checksum-1", false)
+                ));
 
         assertThrows(ResponseStatusException.class, () ->
                 service.persist(4L, 5L, createPdfFile(), chunks)
         );
 
-        verify(chunkRepository, never()).insertAll(
-                any(),
-                anyList(),
-                anyString()
-        );
+        verifyNoInteractions(embeddingService);
+        verifyNoInteractions(chunkWriteService);
     }
 
-    private DocumentVersionInfo createVersion(String sourceType) throws Exception {
+    @Test
+    void shouldRejectWhenExistingChunkChecksumDoesNotMatch()
+            throws Exception {
+
+        DocumentVersionInfo version = createVersion("STATIC");
+
+        when(documentVersionRepository.findByVersionIdAndDocumentId(5L, 4L))
+                .thenReturn(Optional.of(version));
+
+        when(chunkRepository.findByVersionId(5L))
+                .thenReturn(List.of(
+                        new StoredChunkInfo(
+                                0,
+                                "different-checksum",
+                                false
+                        )
+                ));
+
+        assertThrows(ResponseStatusException.class, () ->
+                service.persist(4L, 5L, createPdfFile(), chunks)
+        );
+
+        verifyNoInteractions(embeddingService);
+        verifyNoInteractions(chunkWriteService);
+    }
+
+    private DocumentVersionInfo createVersion(String sourceType)
+            throws Exception {
+
         return new DocumentVersionInfo(
                 5L,
                 4L,

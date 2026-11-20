@@ -1,4 +1,4 @@
-﻿
+
 spring:
   application:
     name: ingest-static
@@ -24,3 +24,9 @@ app:
   ingestion:
     chunk-size: 1000
     chunk-overlap: 200
+  embedding:
+    api-url: ${GEMINI_API_URL:https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents}
+    api-key: ${GEMINI_API_KEY:}
+    model: ${EMBEDDING_MODEL:models/gemini-embedding-001}
+    dimensions: ${EMBEDDING_DIMENSIONS:1536}
+    batch-size: ${EMBEDDING_BATCH_SIZE:64}
