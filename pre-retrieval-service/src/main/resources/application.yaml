@@ -1,6 +1,11 @@
 spring:
   application:
     name: pre-retrieval-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5433/devdocs}
+    username: ${DB_USERNAME:devdocs}
+    password: ${DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
 
 server:
   port: ${SERVER_PORT:8084}

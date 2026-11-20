@@ -76,6 +76,9 @@ services:
     container_name: devdocs-pre-retrieval-service
     restart: unless-stopped
     environment:
+      DB_URL: jdbc:postgresql://db:5432/${POSTGRES_DB}
+      DB_USERNAME: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
       SERVER_PORT: 8084
     ports:
       - "8084:8084"
