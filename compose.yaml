@@ -91,5 +91,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+  eureka-server:
+    build:
+      context: ./eureka-server
+      dockerfile: Dockerfile
+    container_name: devdocs-eureka-server
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: 8761
+      EUREKA_HOSTNAME: eureka-server
+    ports:
+      - "8761:8761"
 volumes:
   devdocs_pgdata:
