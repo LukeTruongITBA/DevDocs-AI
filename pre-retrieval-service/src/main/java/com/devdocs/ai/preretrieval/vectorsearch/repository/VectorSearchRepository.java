@@ -1,3 +1,4 @@
+
 package com.devdocs.ai.preretrieval.vectorsearch.repository;
 
 import com.devdocs.ai.preretrieval.vectorsearch.dto.VectorSearchResult;
@@ -16,24 +17,32 @@ import java.util.stream.Collectors;
 public class VectorSearchRepository {
 
     private static final String SEARCH_SQL = """
-            WITH query_vector AS (
-                SELECT CAST(? AS vector) AS embedding
-            )
-            SELECT
-                c.id,
-                c.version_id,
-                c.chunk_index,
-                c.content,
-                c.page_number,
-                c.metadata::text AS metadata,
-                1 - (c.embedding <=> q.embedding) AS similarity
-            FROM chunks c
-            CROSS JOIN query_vector q
-            WHERE c.version_id = ?
-              AND c.embedding IS NOT NULL
-            ORDER BY c.embedding <=> q.embedding
-            LIMIT ?
-            """;
+        WITH query_vector AS (
+            SELECT CAST(? AS vector) AS embedding
+        )
+        SELECT
+            c.id,
+            c.version_id,
+            d.id AS document_id,
+            d.title AS document_title,
+            dv.version_label,
+            d.source_uri,
+            c.chunk_index,
+            c.content,
+            c.page_number,
+            c.metadata::text AS metadata,
+            1 - (c.embedding <=> q.embedding) AS similarity
+        FROM chunks c
+        JOIN document_versions dv
+            ON dv.id = c.version_id
+        JOIN documents d
+            ON d.id = dv.document_id
+        CROSS JOIN query_vector q
+        WHERE c.version_id = ?
+          AND c.embedding IS NOT NULL
+        ORDER BY c.embedding <=> q.embedding
+        LIMIT ?
+        """;
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -75,6 +84,10 @@ public class VectorSearchRepository {
                     return new VectorSearchResult(
                             rs.getLong("id"),
                             rs.getLong("version_id"),
+                            rs.getLong("document_id"),
+                            rs.getString("document_title"),
+                            rs.getString("version_label"),
+                            rs.getString("source_uri"),
                             rs.getInt("chunk_index"),
                             rs.getString("content"),
                             rs.getObject("page_number", Integer.class),
