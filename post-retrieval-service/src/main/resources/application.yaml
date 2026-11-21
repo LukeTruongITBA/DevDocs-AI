@@ -1,3 +1,4 @@
+
 spring:
   application:
     name: post-retrieval-service
@@ -13,3 +14,10 @@ management:
   endpoint:
     health:
       show-details: always
+
+app:
+  llm:
+    gemini:
+      api-url: ${GEMINI_INTERACTIONS_API_URL:https://generativelanguage.googleapis.com/v1beta/interactions}
+      api-key: ${GEMINI_API_KEY:}
+      model: ${GEMINI_LLM_MODEL:gemini-3.8-flash}
