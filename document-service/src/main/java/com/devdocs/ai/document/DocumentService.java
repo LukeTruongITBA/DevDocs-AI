@@ -19,6 +19,16 @@ public class DocumentService {
     }
 
     public Document create(CreateDocumentRequest request) {
+
+        // Reuse an existing WEB document with the same source URI.
+        if ("WEB".equalsIgnoreCase(request.sourceType())) {
+            return documentRepository.saveOrGetWebDocument(
+                    request.title(),
+                    request.sourceUri()
+            );
+        }
+
+        // Create a new STATIC document.
         return documentRepository.save(
                 request.title(),
                 request.sourceType(),

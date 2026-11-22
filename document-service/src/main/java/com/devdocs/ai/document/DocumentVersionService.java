@@ -2,6 +2,7 @@
 package com.devdocs.ai.document;
 
 import com.devdocs.ai.document.dto.CreateDocumentVersionRequest;
+import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,29 +32,79 @@ public class DocumentVersionService {
     ) {
         try {
             documentRepository.findById(documentId);
-        } catch (org.springframework.dao.EmptyResultDataAccessException exception) {
+        } catch (EmptyResultDataAccessException exception) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND,
                     "Document not found: " + documentId
             );
         }
 
-        versionRepository.clearCurrentVersion(documentId);
+        String versionLabel = request.versionLabel().trim();
+        String checksum = request.checksum().toLowerCase(Locale.ROOT);
 
-        String normalizedChecksum =
-                request.checksum().toLowerCase(Locale.ROOT);
+        DocumentVersion existing =
+                versionRepository.findByDocumentAndLabel(
+                        documentId,
+                        versionLabel
+                );
+
+        // Existing version: reuse it if content is unchanged.
+        if (existing != null) {
+
+            if (existing.checksum().equals(checksum)) {
+                return existing;
+            }
+
+            // Do not allow one checksum to belong to two versions.
+            boolean checksumUsed =
+                    versionRepository.checksumExistsForAnotherVersion(
+                            documentId,
+                            checksum,
+                            existing.id()
+                    );
+
+            if (checksumUsed) {
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Checksum already belongs to another version"
+                );
+            }
+
+            return versionRepository.updateChecksum(
+                    existing.id(),
+                    checksum
+            );
+        }
+
+        // New version: prevent duplicate checksum.
+        boolean checksumUsed =
+                versionRepository.checksumExistsForAnotherVersion(
+                        documentId,
+                        checksum,
+                        -1L
+                );
+
+        if (checksumUsed) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Checksum already belongs to another version"
+            );
+        }
+
+        // Only a new version becomes current.
+        versionRepository.clearCurrentVersion(documentId);
 
         return versionRepository.save(
                 documentId,
-                request.versionLabel(),
-                normalizedChecksum
+                versionLabel,
+                checksum
         );
     }
 
     public List<DocumentVersion> findByDocumentId(Long documentId) {
         try {
             documentRepository.findById(documentId);
-        } catch (org.springframework.dao.EmptyResultDataAccessException exception) {
+        } catch (EmptyResultDataAccessException exception) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND,
                     "Document not found: " + documentId

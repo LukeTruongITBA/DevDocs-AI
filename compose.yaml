@@ -56,6 +56,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
   ingest-dynamic:
     build:
       context: ./ingest-dynamic
@@ -63,12 +64,23 @@ services:
     container_name: devdocs-ingest-dynamic
     restart: unless-stopped
     environment:
+      DB_URL: jdbc:postgresql://db:5432/${POSTGRES_DB}
+      DB_USERNAME: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
       SERVER_PORT: 8083
+      DOCUMENT_SERVICE_URL: http://document-service:8081
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE}
     ports:
       - "8083:8083"
     depends_on:
       db:
         condition: service_healthy
+      document-service:
+        condition: service_started
+
   pre-retrieval-service:
     build:
       context: ./pre-retrieval-service

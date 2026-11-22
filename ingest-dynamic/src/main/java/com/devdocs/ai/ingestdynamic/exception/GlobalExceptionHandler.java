@@ -1,0 +1,89 @@
+
+package com.devdocs.ai.ingestdynamic.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.io.IOException;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    public record ApiErrorResponse(
+            int status,
+            String error,
+            String message
+    ) {
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiErrorResponse> handleValidationException(
+            MethodArgumentNotValidException exception
+    ) {
+
+        String message = exception.getBindingResult()
+                .getFieldErrors()
+                .stream()
+                .findFirst()
+                .map(error -> error.getDefaultMessage())
+                .orElse("Invalid request.");
+
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                message
+        );
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidRequestBody(
+            HttpMessageNotReadableException exception
+    ) {
+
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                "Request body is missing or contains invalid JSON."
+        );
+    }
+
+    @ExceptionHandler(IOException.class)
+    public ResponseEntity<ApiErrorResponse> handleIOException(
+            IOException exception
+    ) {
+
+        return buildResponse(
+                HttpStatus.BAD_GATEWAY,
+                "Failed to retrieve or process external website content."
+        );
+    }
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ApiErrorResponse> handleIllegalState(
+            IllegalStateException exception
+    ) {
+
+        return buildResponse(
+                HttpStatus.UNPROCESSABLE_ENTITY,
+                exception.getMessage() != null
+                        ? exception.getMessage()
+                        : "Ingestion could not be completed."
+        );
+    }
+
+    private ResponseEntity<ApiErrorResponse> buildResponse(
+            HttpStatus status,
+            String message
+    ) {
+
+        ApiErrorResponse response = new ApiErrorResponse(
+                status.value(),
+                status.getReasonPhrase(),
+                message
+        );
+
+        return ResponseEntity.status(status).body(response);
+    }
+}

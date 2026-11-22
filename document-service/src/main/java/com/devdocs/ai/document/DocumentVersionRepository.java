@@ -1,6 +1,7 @@
 
 package com.devdocs.ai.document;
 
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -33,6 +34,52 @@ public class DocumentVersionRepository {
                     )
             );
 
+    public DocumentVersion findByDocumentAndLabel(
+            Long documentId,
+            String versionLabel
+    ) {
+        String sql = """
+                SELECT id, document_id, version_label, checksum,
+                       is_current, fetched_at, created_at
+                FROM document_versions
+                WHERE document_id = ?
+                  AND version_label = ?
+                """;
+
+        return jdbcTemplate.query(
+                sql,
+                rowMapper,
+                documentId,
+                versionLabel
+        ).stream().findFirst().orElse(null);
+    }
+
+    public boolean checksumExistsForAnotherVersion(
+            Long documentId,
+            String checksum,
+            Long excludedVersionId
+    ) {
+        String sql = """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM document_versions
+                    WHERE document_id = ?
+                      AND checksum = ?
+                      AND id <> ?
+                )
+                """;
+
+        Boolean exists = jdbcTemplate.queryForObject(
+                sql,
+                Boolean.class,
+                documentId,
+                checksum,
+                excludedVersionId
+        );
+
+        return Boolean.TRUE.equals(exists);
+    }
+
     public void clearCurrentVersion(Long documentId) {
         String sql = """
                 UPDATE document_versions
@@ -51,8 +98,35 @@ public class DocumentVersionRepository {
     ) {
         String sql = """
                 INSERT INTO document_versions
-                    (document_id, version_label, checksum, is_current)
-                VALUES (?, ?, ?, true)
+                    (document_id, version_label, checksum,
+                     is_current, fetched_at)
+                VALUES (?, ?, ?, true, NOW())
+                RETURNING id, document_id, version_label, checksum,
+                          is_current, fetched_at, created_at
+                """;
+
+        try {
+            return jdbcTemplate.queryForObject(
+                    sql,
+                    rowMapper,
+                    documentId,
+                    versionLabel,
+                    checksum
+            );
+        } catch (DuplicateKeyException exception) {
+            throw exception;
+        }
+    }
+
+    public DocumentVersion updateChecksum(
+            Long versionId,
+            String checksum
+    ) {
+        String sql = """
+                UPDATE document_versions
+                SET checksum = ?,
+                    fetched_at = NOW()
+                WHERE id = ?
                 RETURNING id, document_id, version_label, checksum,
                           is_current, fetched_at, created_at
                 """;
@@ -60,9 +134,8 @@ public class DocumentVersionRepository {
         return jdbcTemplate.queryForObject(
                 sql,
                 rowMapper,
-                documentId,
-                versionLabel,
-                checksum
+                checksum,
+                versionId
         );
     }
 

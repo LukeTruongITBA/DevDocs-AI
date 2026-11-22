@@ -54,6 +54,34 @@ public class DocumentRepository {
         );
     }
 
+
+    public Document saveOrGetWebDocument(
+            String title,
+            String sourceUri
+    ) {
+        String sql = """
+                INSERT INTO documents
+                    (title, source_type, source_uri)
+                VALUES (?, 'WEB', ?)
+                ON CONFLICT (source_uri)
+                    WHERE source_type = 'WEB'
+                      AND source_uri IS NOT NULL
+                DO UPDATE SET
+                    title = EXCLUDED.title,
+                    updated_at = NOW()
+                RETURNING id, title, source_type, source_uri,
+                          created_at, updated_at
+                """;
+
+        return jdbcTemplate.queryForObject(
+                sql,
+                documentRowMapper,
+                title,
+                sourceUri
+        );
+    }
+
+
     public List<Document> findAll() {
         String sql = """
                 SELECT id, title, source_type, source_uri,

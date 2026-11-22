@@ -1,3 +1,4 @@
+
 package com.devdocs.ai.document;
 
 import com.devdocs.ai.document.dto.CreateDocumentRequest;
@@ -22,7 +23,7 @@ class DocumentServiceTest {
     private DocumentService documentService;
 
     @Test
-    void createShouldCallRepository() {
+    void createShouldCallRepositoryForStaticDocument() {
         CreateDocumentRequest request = new CreateDocumentRequest(
                 "Test Document",
                 "STATIC",
@@ -35,6 +36,44 @@ class DocumentServiceTest {
                 "Test Document",
                 "STATIC",
                 "https://example.com/test"
+        );
+
+        verify(documentRepository, never())
+                .saveOrGetWebDocument(anyString(), anyString());
+    }
+
+    @Test
+    void createShouldReuseExistingWebDocument() {
+        CreateDocumentRequest request = new CreateDocumentRequest(
+                "Spring Boot Documentation",
+                "WEB",
+                "https://docs.spring.io/spring-boot/"
+        );
+
+        documentService.create(request);
+
+        verify(documentRepository).saveOrGetWebDocument(
+                "Spring Boot Documentation",
+                "https://docs.spring.io/spring-boot/"
+        );
+
+        verify(documentRepository, never())
+                .save(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void createShouldHandleLowercaseWebSourceType() {
+        CreateDocumentRequest request = new CreateDocumentRequest(
+                "Spring Boot Documentation",
+                "web",
+                "https://docs.spring.io/spring-boot/"
+        );
+
+        documentService.create(request);
+
+        verify(documentRepository).saveOrGetWebDocument(
+                "Spring Boot Documentation",
+                "https://docs.spring.io/spring-boot/"
         );
     }
 
