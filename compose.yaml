@@ -92,6 +92,11 @@ services:
       DB_USERNAME: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       SERVER_PORT: 8084
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-models/gemini-embedding-001}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-64}
+      POST_RETRIEVAL_SERVICE_URL: http://post-retrieval-service:8085
     ports:
       - "8084:8084"
     depends_on:
@@ -106,6 +111,8 @@ services:
     restart: unless-stopped
     environment:
       SERVER_PORT: 8085
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_LLM_MODEL: ${GEMINI_LLM_MODEL:-gemini-3.8-flash}
     ports:
       - "8085:8085"
     depends_on:

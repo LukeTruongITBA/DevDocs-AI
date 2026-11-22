@@ -19,6 +19,17 @@ public class DocumentService {
     }
 
     public Document create(CreateDocumentRequest request) {
+
+        // WEB documents: reuse an existing document
+        // when the source URI already exists.
+        if ("WEB".equalsIgnoreCase(request.sourceType())) {
+            return documentRepository.saveOrGetWebDocument(
+                    request.title(),
+                    request.sourceUri()
+            );
+        }
+
+        // STATIC documents: create a new document.
         return documentRepository.save(
                 request.title(),
                 request.sourceType(),
@@ -36,7 +47,7 @@ public class DocumentService {
         } catch (EmptyResultDataAccessException exception) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND,
-                    "Document not found: " + id
+                    "Document not found with id: " + id
             );
         }
     }
