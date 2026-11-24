@@ -1,6 +1,7 @@
 
 package com.devdocs.ai.ingestdynamic.fetcher;
 
+import com.devdocs.ai.ingestdynamic.exception.WebsiteSecurityException;
 import com.devdocs.ai.ingestdynamic.config.IngestionProperties;
 import com.devdocs.ai.ingestdynamic.security.UrlSecurityValidator;
 import com.sun.net.httpserver.HttpServer;
@@ -188,7 +189,7 @@ class WebsiteFetcherTest {
         );
 
         assertThrows(
-                IOException.class,
+                WebsiteSecurityException.class,
                 () -> fetcher.fetch(localUrl("/external-redirect"))
         );
 

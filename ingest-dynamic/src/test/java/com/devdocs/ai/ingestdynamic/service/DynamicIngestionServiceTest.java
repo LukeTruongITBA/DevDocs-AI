@@ -3,6 +3,9 @@ package com.devdocs.ai.ingestdynamic.service;
 
 import com.devdocs.ai.ingestdynamic.chunker.DynamicTextChunker;
 import com.devdocs.ai.ingestdynamic.client.DocumentServiceClient;
+import com.devdocs.ai.ingestdynamic.dto.CrawlFailure;
+import com.devdocs.ai.ingestdynamic.dto.CrawlFailureStage;
+import com.devdocs.ai.ingestdynamic.dto.CrawlResult;
 import com.devdocs.ai.ingestdynamic.dto.CrawledPage;
 import com.devdocs.ai.ingestdynamic.dto.DocumentResponse;
 import com.devdocs.ai.ingestdynamic.dto.DocumentVersionResponse;
@@ -89,7 +92,7 @@ class DynamicIngestionServiceTest {
             throws Exception {
 
         when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
-                .thenReturn(List.of(crawledPage));
+                .thenReturn(completeCrawlResult());
 
         when(documentServiceClient.createDocument(any()))
                 .thenReturn(document);
@@ -119,6 +122,7 @@ class DynamicIngestionServiceTest {
         assertEquals(0, result.chunksStored());
 
         verify(embeddingService, never()).embed(anyList());
+
         verify(chunkRepository, never())
                 .replaceChunks(anyLong(), anyLong(), anyList(), anyList());
 
@@ -131,7 +135,7 @@ class DynamicIngestionServiceTest {
             throws Exception {
 
         when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
-                .thenReturn(List.of(crawledPage));
+                .thenReturn(completeCrawlResult());
 
         when(documentServiceClient.createDocument(any()))
                 .thenReturn(document);
@@ -188,7 +192,16 @@ class DynamicIngestionServiceTest {
             throws Exception {
 
         when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
-                .thenReturn(List.of());
+                .thenReturn(
+                        new CrawlResult(
+                                List.of(),
+                                0,
+                                0,
+                                List.of(),
+                                0,
+                                false
+                        )
+                );
 
         assertThrows(
                 IllegalStateException.class,
@@ -198,10 +211,58 @@ class DynamicIngestionServiceTest {
                 )
         );
 
-        verify(documentServiceClient, never())
-                .createDocument(any());
+        verifyNoInteractions(
+                documentServiceClient,
+                textChunker,
+                embeddingService,
+                chunkRepository
+        );
+    }
 
-        verify(embeddingService, never()).embed(anyList());
+    @Test
+    void shouldRejectIncompleteCrawlBeforeAnyIngestionSideEffects()
+            throws Exception {
+
+        CrawlFailure failure = new CrawlFailure(
+                WEBSITE_URL + "configuration.html",
+                CrawlFailureStage.FETCH,
+                "HTTP 503 Service Unavailable."
+        );
+
+        CrawlResult incompleteResult = new CrawlResult(
+                List.of(crawledPage),
+                1,
+                0,
+                List.of(failure),
+                0,
+                false
+        );
+
+        when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
+                .thenReturn(incompleteResult);
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> ingestionService.ingest(
+                        WEBSITE_URL,
+                        VERSION
+                )
+        );
+
+        assertTrue(
+                exception.getMessage().contains("incomplete")
+        );
+
+        assertTrue(
+                exception.getMessage().contains("FETCH")
+        );
+
+        verifyNoInteractions(
+                documentServiceClient,
+                textChunker,
+                embeddingService,
+                chunkRepository
+        );
     }
 
     @Test
@@ -209,7 +270,7 @@ class DynamicIngestionServiceTest {
             throws Exception {
 
         when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
-                .thenReturn(List.of(crawledPage));
+                .thenReturn(completeCrawlResult());
 
         when(documentServiceClient.createDocument(any()))
                 .thenReturn(document);
@@ -243,6 +304,17 @@ class DynamicIngestionServiceTest {
                         anyList(),
                         anyList()
                 );
+    }
+
+    private CrawlResult completeCrawlResult() {
+        return new CrawlResult(
+                List.of(crawledPage),
+                1,
+                0,
+                List.of(),
+                0,
+                false
+        );
     }
 
     private String calculateChecksum() {

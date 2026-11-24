@@ -5,6 +5,8 @@ import com.devdocs.ai.ingestdynamic.chunker.DynamicTextChunker;
 import com.devdocs.ai.ingestdynamic.client.DocumentServiceClient;
 import com.devdocs.ai.ingestdynamic.dto.CreateDocumentRequest;
 import com.devdocs.ai.ingestdynamic.dto.CreateDocumentVersionRequest;
+import com.devdocs.ai.ingestdynamic.dto.CrawlFailure;
+import com.devdocs.ai.ingestdynamic.dto.CrawlResult;
 import com.devdocs.ai.ingestdynamic.dto.CrawledPage;
 import com.devdocs.ai.ingestdynamic.dto.DocumentResponse;
 import com.devdocs.ai.ingestdynamic.dto.DocumentVersionResponse;
@@ -47,22 +49,42 @@ public class DynamicIngestionService {
     ) throws IOException {
 
         // 1. Crawl website and detect its version.
-        List<CrawledPage> pages =
+        CrawlResult crawlResult =
                 websiteCrawler.crawl(websiteUrl, explicitVersion);
 
-        if (pages.isEmpty()) {
+        // 2. Reject incomplete crawls before modifying any data.
+        if (!crawlResult.complete()) {
+            String failureDetails = crawlResult.failures()
+                    .stream()
+                    .limit(3)
+                    .map(this::formatFailure)
+                    .reduce(
+                            (first, second) -> first + "; " + second
+                    )
+                    .orElse("No individual page failures recorded.");
+
             throw new IllegalStateException(
-                    "Website crawler returned no pages."
+                    "Website crawl is incomplete. "
+                            + "Fetched pages: " + crawlResult.fetchedPages()
+                            + ", retained pages: " + crawlResult.pages().size()
+                            + ", failed pages: " + crawlResult.failures().size()
+                            + ", pending pages: " + crawlResult.pendingPages()
+                            + ", maximum pages reached: "
+                            + crawlResult.maxPagesReached()
+                            + ". Details: " + failureDetails
             );
         }
 
+        List<CrawledPage> pages = crawlResult.pages();
+
+        // 3. Read the detected website version.
         String versionLabel = pages.get(0).version();
 
-        // 2. Calculate deterministic website snapshot checksum.
+        // 4. Calculate deterministic website snapshot checksum.
         String checksum =
                 ChecksumUtils.websiteSnapshotChecksum(pages);
 
-        // 3. Create or reuse the WEB document.
+        // 5. Create or reuse the WEB document.
         String normalizedUrl = pages.get(0).page().sourceUrl();
 
         DocumentResponse document =
@@ -82,7 +104,7 @@ public class DynamicIngestionService {
 
         Long documentId = document.id();
 
-        // 4. Check whether this version already has the same content.
+        // 6. Check whether this version already has the same content.
         List<DocumentVersionResponse> versions =
                 documentServiceClient.findVersions(documentId);
 
@@ -106,7 +128,7 @@ public class DynamicIngestionService {
             );
         }
 
-        // 5. Chunk all crawled pages.
+        // 7. Chunk all crawled pages.
         List<TextChunk> chunks = new ArrayList<>();
 
         for (CrawledPage page : pages) {
@@ -119,11 +141,11 @@ public class DynamicIngestionService {
             );
         }
 
-        // 6. Generate embeddings before modifying version/chunk data.
+        // 8. Generate embeddings before modifying version/chunk data.
         List<float[]> embeddings =
                 embeddingService.embed(chunks);
 
-        // 7. Create or update version metadata.
+        // 9. Create or update version metadata.
         DocumentVersionResponse version =
                 documentServiceClient.createVersion(
                         documentId,
@@ -139,7 +161,7 @@ public class DynamicIngestionService {
             );
         }
 
-        // 8. Replace chunks for this version.
+        // 10. Replace chunks for this version.
         chunkRepository.replaceChunks(
                 documentId,
                 version.id(),
@@ -156,6 +178,14 @@ public class DynamicIngestionService {
                 chunks.size(),
                 false
         );
+    }
+
+    private String formatFailure(CrawlFailure failure) {
+        return failure.stage()
+                + " at "
+                + failure.url()
+                + ": "
+                + failure.message();
     }
 
     public record IngestionResult(

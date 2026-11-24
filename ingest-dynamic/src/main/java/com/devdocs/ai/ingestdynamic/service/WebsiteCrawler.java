@@ -2,7 +2,12 @@
 package com.devdocs.ai.ingestdynamic.service;
 
 import com.devdocs.ai.ingestdynamic.config.IngestionProperties;
+import com.devdocs.ai.ingestdynamic.dto.CrawlFailure;
+import com.devdocs.ai.ingestdynamic.dto.CrawlFailureStage;
+import com.devdocs.ai.ingestdynamic.dto.CrawlResult;
 import com.devdocs.ai.ingestdynamic.dto.CrawledPage;
+import com.devdocs.ai.ingestdynamic.exception.WebsiteFetchException;
+import com.devdocs.ai.ingestdynamic.exception.WebsiteSecurityException;
 import com.devdocs.ai.ingestdynamic.extractor.ExtractedPage;
 import com.devdocs.ai.ingestdynamic.extractor.HtmlContentExtractor;
 import com.devdocs.ai.ingestdynamic.fetcher.WebsiteFetcher;
@@ -10,6 +15,8 @@ import com.devdocs.ai.ingestdynamic.version.VersionDetectionResult;
 import com.devdocs.ai.ingestdynamic.version.VersionDetector;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -28,6 +35,9 @@ import java.util.Set;
 @Component
 public class WebsiteCrawler {
 
+    private static final Logger log =
+            LoggerFactory.getLogger(WebsiteCrawler.class);
+
     private final WebsiteFetcher websiteFetcher;
     private final HtmlContentExtractor contentExtractor;
     private final VersionDetector versionDetector;
@@ -45,7 +55,7 @@ public class WebsiteCrawler {
         this.properties = properties;
     }
 
-    public List<CrawledPage> crawl(
+    public CrawlResult crawl(
             String startUrl,
             String explicitVersion
     ) throws IOException {
@@ -62,14 +72,26 @@ public class WebsiteCrawler {
         Set<String> visitedContentChecksums = new LinkedHashSet<>();
 
         List<CrawledPage> crawledPages = new ArrayList<>();
+        List<CrawlFailure> failures = new ArrayList<>();
 
         pendingUrls.add(startUri);
 
         String websiteVersion = null;
         int fetchedPages = 0;
+        int attemptedPages = 0;
+        int duplicateContentPages = 0;
+
+        log.info(
+                "Starting website crawl: startUrl={}, allowedHost={}, "
+                        + "allowedPathPrefix={}, maxPages={}",
+                startUri,
+                allowedHost,
+                allowedPathPrefix,
+                properties.maxPages()
+        );
 
         while (!pendingUrls.isEmpty()
-                && fetchedPages < properties.maxPages()) {
+                && attemptedPages < properties.maxPages()) {
 
             URI currentUri = pendingUrls.poll();
             String currentUrl = currentUri.toString();
@@ -78,8 +100,31 @@ public class WebsiteCrawler {
                 continue;
             }
 
-            Document document = websiteFetcher.fetch(currentUrl);
-            fetchedPages++;
+            attemptedPages++;
+
+            Document document;
+
+            try {
+                document = websiteFetcher.fetch(currentUrl);
+                fetchedPages++;
+
+            } catch (WebsiteFetchException exception) {
+                failures.add(
+                        new CrawlFailure(
+                                currentUrl,
+                                CrawlFailureStage.FETCH,
+                                exception.getMessage()
+                        )
+                );
+
+                log.warn(
+                        "Failed to fetch website page: url={}, reason={}",
+                        currentUrl,
+                        exception.getMessage()
+                );
+
+                continue;
+            }
 
             // Verify the final URL after redirects.
             String finalUrl = document.location();
@@ -109,21 +154,77 @@ public class WebsiteCrawler {
                 }
             }
 
-            VersionDetectionResult detectionResult =
-                    versionDetector.detect(
-                            currentUrl,
-                            document,
-                            websiteVersion == null
-                                    ? explicitVersion
-                                    : websiteVersion
-                    );
+            // Discover links before version detection and extraction.
+            // This allows the crawler to continue even if either step fails.
+            discoverLinks(
+                    document,
+                    allowedHost,
+                    allowedPathPrefix,
+                    pendingUrls,
+                    visitedUrls
+            );
+
+            VersionDetectionResult detectionResult;
+
+            try {
+                detectionResult = versionDetector.detect(
+                        currentUrl,
+                        document,
+                        websiteVersion == null
+                                ? explicitVersion
+                                : websiteVersion
+                );
+
+            } catch (WebsiteSecurityException exception) {
+                throw exception;
+
+            } catch (IllegalArgumentException exception) {
+                failures.add(
+                        new CrawlFailure(
+                                currentUrl,
+                                CrawlFailureStage.VERSION_DETECTION,
+                                exception.getMessage()
+                        )
+                );
+
+                log.warn(
+                        "Failed to detect website version: url={}, reason={}",
+                        currentUrl,
+                        exception.getMessage()
+                );
+
+                continue;
+            }
 
             if (websiteVersion == null) {
                 websiteVersion = detectionResult.version();
             }
 
-            ExtractedPage extractedPage =
-                    contentExtractor.extract(document, currentUrl);
+            ExtractedPage extractedPage;
+
+            try {
+                extractedPage = contentExtractor.extract(
+                        document,
+                        currentUrl
+                );
+
+            } catch (IllegalArgumentException exception) {
+                failures.add(
+                        new CrawlFailure(
+                                currentUrl,
+                                CrawlFailureStage.EXTRACTION,
+                                exception.getMessage()
+                        )
+                );
+
+                log.warn(
+                        "Failed to extract website page: url={}, reason={}",
+                        currentUrl,
+                        exception.getMessage()
+                );
+
+                continue;
+            }
 
             String contentChecksum = sha256(
                     extractedPage.content()
@@ -137,42 +238,96 @@ public class WebsiteCrawler {
                                 websiteVersion
                         )
                 );
-            }
 
-            // Discover links even when the page content is duplicated.
-            for (Element link : document.select("a[href]")) {
-                String absoluteUrl = link.absUrl("href");
+                log.debug(
+                        "Crawl retained page: url={}, title={}, contentLength={}",
+                        currentUrl,
+                        extractedPage.title(),
+                        extractedPage.content().length()
+                );
 
-                if (absoluteUrl.isBlank()) {
-                    continue;
-                }
+            } else {
+                duplicateContentPages++;
 
-                URI candidate;
-
-                try {
-                    candidate = normalizeUrl(absoluteUrl);
-                } catch (IllegalArgumentException exception) {
-                    continue;
-                }
-
-                if (!isWithinAllowedScope(
-                        candidate,
-                        allowedHost,
-                        allowedPathPrefix
-                )) {
-                    continue;
-                }
-
-                String candidateUrl = candidate.toString();
-
-                if (!visitedUrls.contains(candidateUrl)
-                        && !pendingUrls.contains(candidate)) {
-                    pendingUrls.add(candidate);
-                }
+                log.debug(
+                        "Crawl skipped duplicate content: url={}, title={}",
+                        currentUrl,
+                        extractedPage.title()
+                );
             }
         }
 
-        return List.copyOf(crawledPages);
+        int pendingPages = pendingUrls.size();
+
+        boolean maxPagesReached =
+                attemptedPages >= properties.maxPages()
+                        && pendingPages > 0;
+
+        CrawlResult result = new CrawlResult(
+                crawledPages,
+                fetchedPages,
+                duplicateContentPages,
+                failures,
+                pendingPages,
+                maxPagesReached
+        );
+
+        log.info(
+                "Website crawl completed: attemptedUrls={}, fetchedUrls={}, "
+                        + "retainedPages={}, duplicateContentPages={}, "
+                        + "failedPages={}, visitedUrls={}, pendingUrls={}, "
+                        + "maxPagesReached={}, complete={}",
+                attemptedPages,
+                fetchedPages,
+                crawledPages.size(),
+                duplicateContentPages,
+                failures.size(),
+                visitedUrls.size(),
+                pendingPages,
+                maxPagesReached,
+                result.complete()
+        );
+
+        return result;
+    }
+
+    private void discoverLinks(
+            Document document,
+            String allowedHost,
+            String allowedPathPrefix,
+            Queue<URI> pendingUrls,
+            Set<String> visitedUrls
+    ) {
+        for (Element link : document.select("a[href]")) {
+            String absoluteUrl = link.absUrl("href");
+
+            if (absoluteUrl.isBlank()) {
+                continue;
+            }
+
+            URI candidate;
+
+            try {
+                candidate = normalizeUrl(absoluteUrl);
+            } catch (IllegalArgumentException exception) {
+                continue;
+            }
+
+            if (!isWithinAllowedScope(
+                    candidate,
+                    allowedHost,
+                    allowedPathPrefix
+            )) {
+                continue;
+            }
+
+            String candidateUrl = candidate.toString();
+
+            if (!visitedUrls.contains(candidateUrl)
+                    && !pendingUrls.contains(candidate)) {
+                pendingUrls.add(candidate);
+            }
+        }
     }
 
     private String sha256(String content) {

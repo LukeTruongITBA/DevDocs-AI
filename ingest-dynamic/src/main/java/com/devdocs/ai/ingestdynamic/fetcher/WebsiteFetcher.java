@@ -2,6 +2,8 @@
 package com.devdocs.ai.ingestdynamic.fetcher;
 
 import com.devdocs.ai.ingestdynamic.config.IngestionProperties;
+import com.devdocs.ai.ingestdynamic.exception.WebsiteFetchException;
+import com.devdocs.ai.ingestdynamic.exception.WebsiteSecurityException;
 import com.devdocs.ai.ingestdynamic.security.UrlSecurityValidator;
 import org.jsoup.Connection;
 import org.jsoup.Jsoup;
@@ -35,24 +37,36 @@ public class WebsiteFetcher {
         URI currentUri = initialUri;
 
         for (int redirectCount = 0; ; redirectCount++) {
-            Connection.Response response = Jsoup.connect(currentUri.toString())
-                    .userAgent("DevDocsAI/1.0 DocumentationBot")
-                    .timeout(Math.toIntExact(
-                            Duration.ofSeconds(
-                                    properties.requestTimeoutSeconds()
-                            ).toMillis()
-                    ))
-                    .maxBodySize(MAX_RESPONSE_SIZE_BYTES)
-                    .followRedirects(false)
-                    .ignoreHttpErrors(true)
-                    .ignoreContentType(true)
-                    .execute();
+
+            Connection.Response response;
+
+            try {
+                response = Jsoup.connect(currentUri.toString())
+                        .userAgent("DevDocsAI/1.0 DocumentationBot")
+                        .timeout(Math.toIntExact(
+                                Duration.ofSeconds(
+                                        properties.requestTimeoutSeconds()
+                                ).toMillis()
+                        ))
+                        .maxBodySize(MAX_RESPONSE_SIZE_BYTES)
+                        .followRedirects(false)
+                        .ignoreHttpErrors(true)
+                        .ignoreContentType(true)
+                        .execute();
+
+            } catch (IOException exception) {
+                throw new WebsiteFetchException(
+                        "Failed to retrieve website content.",
+                        exception
+                );
+            }
 
             int statusCode = response.statusCode();
 
             if (statusCode >= 300 && statusCode < 400) {
+
                 if (redirectCount >= MAX_REDIRECTS) {
-                    throw new IOException(
+                    throw new WebsiteFetchException(
                             "Website exceeded the maximum redirect limit."
                     );
                 }
@@ -60,7 +74,7 @@ public class WebsiteFetcher {
                 String location = response.header("Location");
 
                 if (location == null || location.isBlank()) {
-                    throw new IOException(
+                    throw new WebsiteFetchException(
                             "Website returned a redirect without a Location header."
                     );
                 }
@@ -68,16 +82,19 @@ public class WebsiteFetcher {
                 URI redirectUri;
 
                 try {
-                    redirectUri = currentUri.resolve(location.trim()).normalize();
+                    redirectUri = currentUri.resolve(
+                            location.trim()
+                    ).normalize();
+
                 } catch (IllegalArgumentException exception) {
-                    throw new IOException(
+                    throw new WebsiteSecurityException(
                             "Website returned an invalid redirect URL.",
                             exception
                     );
                 }
 
                 if (!isSameOrigin(initialUri, redirectUri)) {
-                    throw new IOException(
+                    throw new WebsiteSecurityException(
                             "Redirect to a different website origin is not allowed."
                     );
                 }
@@ -90,20 +107,30 @@ public class WebsiteFetcher {
             }
 
             if (statusCode >= 400) {
-                throw new IOException(
+                throw new WebsiteFetchException(
                         "Website returned HTTP status " + statusCode + "."
                 );
             }
 
             validateContentType(response.contentType());
 
-            return response.parse();
+            try {
+                return response.parse();
+
+            } catch (IOException exception) {
+                throw new WebsiteFetchException(
+                        "Failed to parse website HTML content.",
+                        exception
+                );
+            }
         }
     }
 
-    private void validateContentType(String contentType) throws IOException {
+    private void validateContentType(String contentType)
+            throws WebsiteFetchException {
+
         if (contentType == null) {
-            throw new IOException(
+            throw new WebsiteFetchException(
                     "Website response does not specify a content type."
             );
         }
@@ -117,7 +144,8 @@ public class WebsiteFetcher {
                 && !normalized.equals("application/xhtml+xml")
                 && !normalized.equals("application/xml")
                 && !normalized.equals("text/xml")) {
-            throw new IOException(
+
+            throw new WebsiteFetchException(
                     "Website response must contain HTML or XML content."
             );
         }

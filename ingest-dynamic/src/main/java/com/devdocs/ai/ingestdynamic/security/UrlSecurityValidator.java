@@ -8,6 +8,7 @@ import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.util.Set;
+import com.devdocs.ai.ingestdynamic.exception.WebsiteSecurityException;
 
 @Component
 public class UrlSecurityValidator {
@@ -17,7 +18,7 @@ public class UrlSecurityValidator {
 
     public URI validate(String url) {
         if (url == null || url.isBlank()) {
-            throw new IllegalArgumentException(
+            throw new WebsiteSecurityException(
                     "Website URL must not be blank."
             );
         }
@@ -26,7 +27,7 @@ public class UrlSecurityValidator {
         try {
             uri = URI.create(url.trim()).normalize();
         } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException(
+            throw new WebsiteSecurityException(
                     "Website URL is invalid.", e
             );
         }
@@ -35,7 +36,7 @@ public class UrlSecurityValidator {
 
         if (scheme == null
                 || !ALLOWED_SCHEMES.contains(scheme.toLowerCase())) {
-            throw new IllegalArgumentException(
+            throw new WebsiteSecurityException(
                     "Only HTTP and HTTPS URLs are supported."
             );
         }
@@ -43,13 +44,13 @@ public class UrlSecurityValidator {
         String host = uri.getHost();
 
         if (host == null || host.isBlank()) {
-            throw new IllegalArgumentException(
+            throw new WebsiteSecurityException(
                     "Website URL must contain a valid host."
             );
         }
 
         if (uri.getUserInfo() != null) {
-            throw new IllegalArgumentException(
+            throw new WebsiteSecurityException(
                     "Website URL must not contain embedded credentials."
             );
         }
@@ -65,7 +66,7 @@ public class UrlSecurityValidator {
         if (normalizedHost.equals("localhost")
                 || normalizedHost.endsWith(".localhost")
                 || normalizedHost.endsWith(".local")) {
-            throw new IllegalArgumentException(
+            throw new WebsiteSecurityException(
                     "Local network hosts are not allowed."
             );
         }
@@ -75,20 +76,20 @@ public class UrlSecurityValidator {
         try {
             addresses = InetAddress.getAllByName(host);
         } catch (UnknownHostException e) {
-            throw new IllegalArgumentException(
+            throw new WebsiteSecurityException(
                     "Website hostname could not be resolved.", e
             );
         }
 
         if (addresses.length == 0) {
-            throw new IllegalArgumentException(
+            throw new WebsiteSecurityException(
                     "Website hostname has no resolved addresses."
             );
         }
 
         for (InetAddress address : addresses) {
             if (!isPublicAddress(address)) {
-                throw new IllegalArgumentException(
+                throw new WebsiteSecurityException(
                         "Website URL resolves to a non-public IP address."
                 );
             }
