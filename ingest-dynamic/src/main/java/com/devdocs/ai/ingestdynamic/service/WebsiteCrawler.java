@@ -14,8 +14,12 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Queue;
@@ -47,18 +51,25 @@ public class WebsiteCrawler {
     ) throws IOException {
 
         URI startUri = normalizeUrl(startUrl);
+
         String allowedHost = startUri.getHost();
+        String allowedPathPrefix = createAllowedPathPrefix(
+                startUri.getPath()
+        );
 
         Queue<URI> pendingUrls = new ArrayDeque<>();
         Set<String> visitedUrls = new LinkedHashSet<>();
+        Set<String> visitedContentChecksums = new LinkedHashSet<>();
+
         List<CrawledPage> crawledPages = new ArrayList<>();
 
         pendingUrls.add(startUri);
 
         String websiteVersion = null;
+        int fetchedPages = 0;
 
         while (!pendingUrls.isEmpty()
-                && crawledPages.size() < properties.maxPages()) {
+                && fetchedPages < properties.maxPages()) {
 
             URI currentUri = pendingUrls.poll();
             String currentUrl = currentUri.toString();
@@ -68,6 +79,7 @@ public class WebsiteCrawler {
             }
 
             Document document = websiteFetcher.fetch(currentUrl);
+            fetchedPages++;
 
             // Verify the final URL after redirects.
             String finalUrl = document.location();
@@ -75,16 +87,19 @@ public class WebsiteCrawler {
             if (finalUrl != null && !finalUrl.isBlank()) {
                 URI finalUri = normalizeUrl(finalUrl);
 
-                if (!allowedHost.equalsIgnoreCase(finalUri.getHost())) {
+                if (!isWithinAllowedScope(
+                        finalUri,
+                        allowedHost,
+                        allowedPathPrefix
+                )) {
                     throw new IllegalStateException(
-                            "Website redirected outside the allowed host: "
-                                    + finalUrl
+                            "Website redirected outside the allowed "
+                                    + "crawl scope: " + finalUrl
                     );
                 }
 
                 String normalizedFinalUrl = finalUri.toString();
 
-                // Only check visited URLs when a redirect changed the URL.
                 if (!currentUrl.equals(normalizedFinalUrl)) {
                     if (!visitedUrls.add(normalizedFinalUrl)) {
                         continue;
@@ -110,14 +125,21 @@ public class WebsiteCrawler {
             ExtractedPage extractedPage =
                     contentExtractor.extract(document, currentUrl);
 
-            crawledPages.add(
-                    new CrawledPage(
-                            extractedPage,
-                            websiteVersion
-                    )
+            String contentChecksum = sha256(
+                    extractedPage.content()
             );
 
-            // Discover links only after the page is accepted.
+            // Store only pages with unique extracted content.
+            if (visitedContentChecksums.add(contentChecksum)) {
+                crawledPages.add(
+                        new CrawledPage(
+                                extractedPage,
+                                websiteVersion
+                        )
+                );
+            }
+
+            // Discover links even when the page content is duplicated.
             for (Element link : document.select("a[href]")) {
                 String absoluteUrl = link.absUrl("href");
 
@@ -133,7 +155,11 @@ public class WebsiteCrawler {
                     continue;
                 }
 
-                if (!allowedHost.equalsIgnoreCase(candidate.getHost())) {
+                if (!isWithinAllowedScope(
+                        candidate,
+                        allowedHost,
+                        allowedPathPrefix
+                )) {
                     continue;
                 }
 
@@ -147,6 +173,65 @@ public class WebsiteCrawler {
         }
 
         return List.copyOf(crawledPages);
+    }
+
+    private String sha256(String content) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+
+            byte[] hash = digest.digest(
+                    content.getBytes(StandardCharsets.UTF_8)
+            );
+
+            return HexFormat.of().formatHex(hash);
+
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(
+                    "SHA-256 algorithm is unavailable.",
+                    exception
+            );
+        }
+    }
+
+    private String createAllowedPathPrefix(String startPath) {
+        if (startPath == null || startPath.isBlank()) {
+            return "/";
+        }
+
+        if (startPath.endsWith("/")) {
+            return startPath;
+        }
+
+        return startPath + "/";
+    }
+
+    private boolean isWithinAllowedScope(
+            URI candidate,
+            String allowedHost,
+            String allowedPathPrefix
+    ) {
+        String candidateHost = candidate.getHost();
+
+        if (candidateHost == null
+                || !allowedHost.equalsIgnoreCase(candidateHost)) {
+            return false;
+        }
+
+        String candidatePath = candidate.getPath();
+
+        if (candidatePath == null || candidatePath.isBlank()) {
+            candidatePath = "/";
+        }
+
+        String exactStartPath = allowedPathPrefix.equals("/")
+                ? "/"
+                : allowedPathPrefix.substring(
+                0,
+                allowedPathPrefix.length() - 1
+        );
+
+        return candidatePath.equals(exactStartPath)
+                || candidatePath.startsWith(allowedPathPrefix);
     }
 
     private URI normalizeUrl(String url) {
@@ -189,16 +274,31 @@ public class WebsiteCrawler {
             );
         }
 
+        String path = uri.getPath();
+
+        if (path == null || path.isBlank()) {
+            path = "/";
+        }
+
+        // Treat a directory's index.html as its canonical URL.
+        if (path.endsWith("/index.html")) {
+            path = path.substring(
+                    0,
+                    path.length() - "index.html".length()
+            );
+        }
+
         try {
             return new URI(
                     scheme.toLowerCase(),
                     null,
                     uri.getHost().toLowerCase(),
                     uri.getPort(),
-                    uri.getPath(),
+                    path,
                     uri.getQuery(),
                     null
             ).normalize();
+
         } catch (Exception exception) {
             throw new IllegalArgumentException(
                     "Could not normalize website URL.",

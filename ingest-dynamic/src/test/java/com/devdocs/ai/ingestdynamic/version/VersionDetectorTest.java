@@ -119,6 +119,56 @@ class VersionDetectorTest {
     }
 
     @Test
+    void shouldRejectConflictingUrlAndHtmlTitleVersion() {
+        String html = """
+                <html>
+                <head>
+                    <title>Spring Boot 3.5 Reference Documentation</title>
+                </head>
+                <body>
+                    <h1>Reference Documentation</h1>
+                </body>
+                </html>
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> detector.detect(
+                        "https://docs.spring.io/spring-boot/3.6/reference/",
+                        Jsoup.parse(html),
+                        null
+                )
+        );
+    }
+
+    @Test
+    void shouldNotRejectDifferentVersionMentionedOnlyInBody() {
+        String html = """
+                <html>
+                <head>
+                    <title>Spring Boot 3.6 Reference Documentation</title>
+                </head>
+                <body>
+                    <h1>Reference Documentation</h1>
+                    <p>Migration information from Spring Boot 3.5.</p>
+                </body>
+                </html>
+                """;
+
+        VersionDetectionResult result = detector.detect(
+                "https://docs.spring.io/spring-boot/3.6/reference/",
+                Jsoup.parse(html),
+                null
+        );
+
+        assertEquals("3.6", result.version());
+        assertEquals(
+                VersionDetectionResult.DetectionSource.URL,
+                result.source()
+        );
+    }
+
+    @Test
     void shouldUseExplicitVersionWhenNoVersionIsDetected() {
         VersionDetectionResult result = detector.detect(
                 "https://docs.example.com/reference/",

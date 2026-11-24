@@ -21,3 +21,7 @@ application-local.yml
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local PDF ingestion test results (may contain confidential document content)
+/pdf-ingestion-idempotency.json
+/pdf-ingestion-result.json

@@ -30,6 +30,11 @@ public class VersionDetector {
             )
     );
 
+    private static final Pattern METADATA_VERSION_PATTERN =
+            Pattern.compile(
+                    "^\\s*[vV]?(\\d+\\.\\d+(?:\\.\\d+)?)\\s*$"
+            );
+
     public VersionDetectionResult detect(
             String sourceUrl,
             Document document,
@@ -44,6 +49,14 @@ public class VersionDetector {
         String urlVersion = detectFromUrl(sourceUrl);
 
         if (urlVersion != null) {
+            String htmlHeaderVersion =
+                    detectFromHtmlMetadataAndTitle(document);
+
+            validateUrlAndHtmlVersion(
+                    urlVersion,
+                    htmlHeaderVersion
+            );
+
             validateExplicitVersion(urlVersion, explicitVersion);
 
             return new VersionDetectionResult(
@@ -100,22 +113,35 @@ public class VersionDetector {
     }
 
     private String detectFromHtml(Document document) {
+        String headerVersion =
+                detectFromHtmlMetadataAndTitle(document);
+
+        if (headerVersion != null) {
+            return headerVersion;
+        }
+
+        if (document != null && document.body() != null) {
+            return findVersion(document.body().text());
+        }
+
+        return null;
+    }
+
+    private String detectFromHtmlMetadataAndTitle(
+            Document document
+    ) {
         if (document == null) {
             return null;
         }
 
         // 1. Check explicit version metadata first.
-        Pattern metadataVersionPattern = Pattern.compile(
-                "^\\s*[vV]?(\\d+\\.\\d+(?:\\.\\d+)?)\\s*$"
-        );
-
         for (String selector : List.of(
                 "meta[name=version]",
                 "meta[name=doc-version]",
                 "meta[property=og:version]"
         )) {
             for (var element : document.select(selector)) {
-                Matcher matcher = metadataVersionPattern.matcher(
+                Matcher matcher = METADATA_VERSION_PATTERN.matcher(
                         element.attr("content")
                 );
 
@@ -129,16 +155,7 @@ public class VersionDetector {
         String title = document.title();
 
         if (title != null && !title.isBlank()) {
-            String titleVersion = findVersion(title);
-
-            if (titleVersion != null) {
-                return titleVersion;
-            }
-        }
-
-        // 3. Check body text for explicit version context.
-        if (document.body() != null) {
-            return findVersion(document.body().text());
+            return findVersion(title);
         }
 
         return null;
@@ -154,6 +171,20 @@ public class VersionDetector {
         }
 
         return null;
+    }
+
+    private void validateUrlAndHtmlVersion(
+            String urlVersion,
+            String htmlVersion
+    ) {
+        if (htmlVersion != null
+                && !urlVersion.equals(htmlVersion)) {
+            throw new IllegalArgumentException(
+                    "URL version '" + urlVersion
+                            + "' conflicts with detected version '"
+                            + htmlVersion + "' from HTML."
+            );
+        }
     }
 
     private void validateExplicitVersion(
