@@ -2,7 +2,7 @@ package com.devdocs.ai.postretrieval.controller;
 
 import com.devdocs.ai.postretrieval.dto.AnswerRequest;
 import com.devdocs.ai.postretrieval.dto.AnswerResponse;
-import com.devdocs.ai.postretrieval.service.GeminiGenerationService;
+import com.devdocs.ai.postretrieval.service.CloudflareGenerationService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
@@ -10,10 +10,10 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/answers")
 public class AnswerController {
 
-    private final GeminiGenerationService generationService;
+    private final CloudflareGenerationService generationService;
 
     public AnswerController(
-            GeminiGenerationService generationService
+            CloudflareGenerationService generationService
     ) {
         this.generationService = generationService;
     }

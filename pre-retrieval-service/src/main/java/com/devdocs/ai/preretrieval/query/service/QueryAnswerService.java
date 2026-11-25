@@ -1,4 +1,3 @@
-
 package com.devdocs.ai.preretrieval.query.service;
 
 import com.devdocs.ai.preretrieval.contextstitching.dto.StitchedContext;
@@ -8,9 +7,12 @@ import com.devdocs.ai.preretrieval.query.dto.QueryAnswerResponse;
 import com.devdocs.ai.preretrieval.query.dto.QueryPipelineRequest;
 import com.devdocs.ai.preretrieval.query.dto.QueryPipelineResponse;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
@@ -60,12 +62,23 @@ public class QueryAnswerService {
                         retrievedContext
                 );
 
-        AnswerGenerationResponse answerResponse = restClient.post()
-                .uri(postRetrievalBaseUrl + "/api/answers")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(answerRequest)
-                .retrieve()
-                .body(AnswerGenerationResponse.class);
+        AnswerGenerationResponse answerResponse;
+
+        try {
+            answerResponse = restClient.post()
+                    .uri(postRetrievalBaseUrl + "/api/answers")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(answerRequest)
+                    .retrieve()
+                    .body(AnswerGenerationResponse.class);
+
+        } catch (HttpServerErrorException.ServiceUnavailable exception) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "AI answer generation is temporarily unavailable. Please try again shortly.",
+                    exception
+            );
+        }
 
         if (answerResponse == null
                 || answerResponse.answer() == null

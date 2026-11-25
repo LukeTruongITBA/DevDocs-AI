@@ -1,4 +1,3 @@
-
 spring:
   application:
     name: post-retrieval-service
@@ -17,6 +16,10 @@ management:
 
 app:
   llm:
+    cloudflare:
+      account-id: ${CLOUDFLARE_ACCOUNT_ID:}
+      api-token: ${CLOUDFLARE_API_TOKEN:}
+      model: ${CLOUDFLARE_LLM_MODEL:@cf/zai-org/glm-4.7-flash}
     gemini:
       api-url: ${GEMINI_INTERACTIONS_API_URL:https://generativelanguage.googleapis.com/v1beta/interactions}
       api-key: ${GEMINI_API_KEY:}

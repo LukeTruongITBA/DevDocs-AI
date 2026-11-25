@@ -184,11 +184,17 @@ class QueryAnswerServiceTest {
         mockServer.expect(requestTo(
                         "http://post-retrieval-service:8085/api/answers"
                 ))
-                .andRespond(withServerError());
+                .andRespond(withStatus(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE));
 
-        assertThrows(
-                org.springframework.web.client.HttpServerErrorException.class,
-                () -> queryAnswerService.answer(request)
+        org.springframework.web.server.ResponseStatusException exception =
+                assertThrows(
+                        org.springframework.web.server.ResponseStatusException.class,
+                        () -> queryAnswerService.answer(request)
+                );
+
+        assertEquals(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                exception.getStatusCode()
         );
 
         mockServer.verify();
@@ -197,3 +203,5 @@ class QueryAnswerServiceTest {
         verifyNoMoreInteractions(queryPipelineService);
     }
 }
+
+
