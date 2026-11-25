@@ -11,6 +11,11 @@ spring:
               predicates:
                 - Path=/api/documents/**
 
+            - id: pre-retrieval-service
+              uri: ${PRE_RETRIEVAL_SERVICE_URL:http://localhost:8084}
+              predicates:
+                - Path=/api/query/**
+
 server:
   port: ${SERVER_PORT:8080}
 
