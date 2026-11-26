@@ -46,11 +46,13 @@ services:
       DB_USERNAME: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       SERVER_PORT: 8082
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_API_URL: ${GEMINI_API_URL:-https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-models/gemini-embedding-001}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
       EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-64}
+      CHUNK_SIZE: ${CHUNK_SIZE:-1000}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-200}
     ports:
       - "8082:8082"
     depends_on:
@@ -70,9 +72,12 @@ services:
       SERVER_PORT: 8083
       DOCUMENT_SERVICE_URL: http://document-service:8081
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_API_URL: ${GEMINI_API_URL:-https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS}
       EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE}
+      CHUNK_SIZE: ${CHUNK_SIZE:-1000}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-200}
     ports:
       - "8083:8083"
     depends_on:

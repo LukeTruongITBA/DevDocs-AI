@@ -25,6 +25,19 @@ public class ChunkWriteService {
             List<ChunkEmbedding> embeddings,
             String source
     ) {
+        return insertChunksWithEmbeddings(
+                version, chunks, embeddings, source, chunks.size()
+        );
+    }
+
+    @Transactional
+    public int insertChunksWithEmbeddings(
+            DocumentVersionInfo version,
+            List<TextChunk> chunks,
+            List<ChunkEmbedding> embeddings,
+            String source,
+            int expectedVersionChunkCount
+    ) {
         int insertedCount = chunkRepository.insertAllWithEmbeddings(
                 version,
                 chunks,
@@ -37,10 +50,10 @@ public class ChunkWriteService {
         );
 
         if (insertedCount != chunks.size()
-                || storedCount != chunks.size()) {
+                || storedCount != expectedVersionChunkCount) {
             throw new IllegalStateException(
                     "Chunk and embedding persistence verification failed. "
-                            + "Expected " + chunks.size()
+                            + "Expected " + expectedVersionChunkCount
                             + " chunks but found " + storedCount + "."
             );
         }

@@ -24,9 +24,9 @@ public record EmbeddingProperties(
             );
         }
 
-        if (dimensions <= 0) {
+        if (dimensions != 1536) {
             throw new IllegalArgumentException(
-                    "Embedding dimensions must be greater than zero."
+                    "Embedding dimensions must be 1536 to match PostgreSQL VECTOR(1536)."
             );
         }
 

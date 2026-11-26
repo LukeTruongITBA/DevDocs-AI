@@ -20,7 +20,10 @@ import static org.junit.jupiter.api.Assertions.*;
 class PdfExtractionServiceTest {
 
     private final PdfExtractionService service =
-            new PdfExtractionService(new TextChunker(1000, 200));
+            new PdfExtractionService(
+                    new TextChunker(1000, 200),
+                    new PdfLayoutTextExtractor()
+            );
 
     @Test
     void shouldExtractTextAndCreateChunksFromValidPdf() throws Exception {
@@ -82,6 +85,53 @@ class PdfExtractionServiceTest {
         assertTrue(response.chunks().stream()
                 .anyMatch(chunk -> chunk.pageNumber() == 2
                         && chunk.content().contains("Second page content")));
+    }
+
+    @Test
+    void shouldKeepTableCellsTogetherInVisualRowOrder() throws Exception {
+        byte[] pdfBytes = createPositionedPdf(new String[][]{
+                {"Task", "Owner", "Cadence"},
+                {"Review", "Security Team", "Quarterly"},
+                {"Approve", "Executives", "Annual"},
+                {"Publish", "IT Operations", "As needed"}
+        }, new float[]{50, 220, 390});
+
+        PdfExtractionResponse response = service.extract(new MockMultipartFile(
+                "file", "table.pdf", "application/pdf", pdfBytes));
+
+        String text = response.pages().getFirst().text();
+        assertTrue(text.contains("Task | Owner | Cadence"), text);
+        assertTrue(text.contains("Review | Security Team | Quarterly"), text);
+        assertTrue(text.indexOf("Review") < text.indexOf("Approve"), text);
+    }
+
+    @Test
+    void shouldReadSeparateTextColumnsDownTheLeftThenRightColumn() throws Exception {
+        byte[] pdfBytes = createPositionedPdf(new String[][]{
+                {"Left first line", "Right first line"},
+                {"Left second line", "Right second line"},
+                {"Left third line", "Right third line"},
+                {"Left fourth line", "Right fourth line"}
+        }, new float[]{50, 330});
+
+        PdfExtractionResponse response = service.extract(new MockMultipartFile(
+                "file", "two-column.pdf", "application/pdf", pdfBytes));
+
+        String text = response.pages().getFirst().text();
+        assertTrue(text.indexOf("Left first line") < text.indexOf("Left fourth line"), text);
+        assertTrue(text.indexOf("Left fourth line") < text.indexOf("Right first line"), text);
+        assertTrue(text.indexOf("Right first line") < text.indexOf("Right fourth line"), text);
+    }
+
+    @Test
+    void shouldJoinLineEndHyphenationAndRemoveRepeatedRunningHeaders() throws Exception {
+        byte[] pdfBytes = createTwoPageWrappedPdf();
+        PdfExtractionResponse response = service.extract(new MockMultipartFile(
+                "file", "wrapped.pdf", "application/pdf", pdfBytes));
+
+        assertTrue(response.pages().getFirst().text().contains("security"));
+        assertFalse(response.pages().getFirst().text().contains("secu-\nrity"));
+        assertFalse(response.pages().get(1).text().contains("Repeated handbook header"));
     }
 
     @Test
@@ -174,6 +224,55 @@ class PdfExtractionServiceTest {
                 }
             }
 
+            document.save(output);
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] createPositionedPdf(String[][] rows, float[] columns)
+            throws Exception {
+        try (PDDocument document = new PDDocument();
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            PDPage page = new PDPage();
+            document.addPage(page);
+            for (int row = 0; row < rows.length; row++) {
+                for (int column = 0; column < rows[row].length; column++) {
+                    try (PDPageContentStream stream = new PDPageContentStream(
+                            document, page, PDPageContentStream.AppendMode.APPEND,
+                            true, true)) {
+                        stream.beginText();
+                        stream.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                        stream.newLineAtOffset(columns[column], 700 - row * 24);
+                        stream.showText(rows[row][column]);
+                        stream.endText();
+                    }
+                }
+            }
+            document.save(output);
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] createTwoPageWrappedPdf() throws Exception {
+        try (PDDocument document = new PDDocument();
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            for (String[] lines : new String[][]{
+                    {"Repeated handbook header", "The secu-", "rity baseline is active."},
+                    {"Repeated handbook header", "Page two body text."}
+            }) {
+                PDPage page = new PDPage();
+                document.addPage(page);
+                try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
+                    stream.beginText();
+                    stream.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                    stream.newLineAtOffset(50, 700);
+                    for (int i = 0; i < lines.length; i++) {
+                        if (i > 0) stream.newLineAtOffset(0, -20);
+                        stream.showText(lines[i]);
+                    }
+                    stream.endText();
+                }
+            }
             document.save(output);
             return output.toByteArray();
         }

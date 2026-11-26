@@ -10,6 +10,7 @@ import com.devdocs.ai.ingeststatic.repository.StoredChunkInfo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
@@ -184,6 +185,56 @@ class ChunkPersistenceServiceTest {
                 anyList(),
                 anyString()
         );
+    }
+
+    @Test
+    void shouldCompletePartiallyPersistedVersion() throws Exception {
+        DocumentVersionInfo version = createVersion("STATIC");
+        TextChunk second = new TextChunk(1, 1, "Second chunk", "d".repeat(64));
+        List<TextChunk> allChunks = List.of(chunks.getFirst(), second);
+        ChunkEmbedding secondEmbedding = new ChunkEmbedding(1, List.of(0.4, 0.5, 0.6));
+
+        when(documentVersionRepository.findByVersionIdAndDocumentId(5L, 4L))
+                .thenReturn(Optional.of(version));
+        when(chunkRepository.findByVersionId(5L))
+                .thenReturn(List.of(new StoredChunkInfo(0, "chunk-checksum-001", false)));
+        when(embeddingService.embed(List.of(second))).thenReturn(List.of(secondEmbedding));
+        when(chunkWriteService.insertChunksWithEmbeddings(
+                version, List.of(second), List.of(secondEmbedding),
+                "https://example.com/test.pdf", 2
+        )).thenReturn(1);
+
+        ChunkPersistenceResult result = service.persist(
+                4L, 5L, createPdfFile(), allChunks
+        );
+
+        assertEquals(2, result.chunkCount());
+        assertTrue(result.alreadyIngested());
+        verify(chunkWriteService).insertChunksWithEmbeddings(
+                version, List.of(second), List.of(secondEmbedding),
+                "https://example.com/test.pdf", 2
+        );
+    }
+
+    @Test
+    void shouldRecoverConcurrentDuplicateInsertAsIdempotentSuccess() throws Exception {
+        DocumentVersionInfo version = createVersion("STATIC");
+        when(documentVersionRepository.findByVersionIdAndDocumentId(5L, 4L))
+                .thenReturn(Optional.of(version));
+        when(chunkRepository.findByVersionId(5L))
+                .thenReturn(List.of())
+                .thenReturn(List.of(new StoredChunkInfo(0, "chunk-checksum-001", false)));
+        when(embeddingService.embed(chunks)).thenReturn(embeddings);
+        when(chunkWriteService.insertChunksWithEmbeddings(
+                version, chunks, embeddings, "https://example.com/test.pdf"
+        )).thenThrow(new DuplicateKeyException("concurrent insert"));
+
+        ChunkPersistenceResult result = service.persist(
+                4L, 5L, createPdfFile(), chunks
+        );
+
+        assertTrue(result.alreadyIngested());
+        assertEquals(1, result.chunkCount());
     }
 
     @Test

@@ -17,9 +17,13 @@ import java.sql.Types;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.regex.Pattern;
 
 @Repository
 public class DynamicChunkRepository {
+
+    private static final Pattern SHA256 = Pattern.compile("[a-f0-9]{64}");
 
     private static final String DELETE_SQL = """
             DELETE FROM chunks
@@ -160,6 +164,16 @@ public class DynamicChunkRepository {
                 }
             }
         }
+
+        for (TextChunk chunk : chunks) {
+            if (chunk == null || chunk.content().isBlank()
+                    || chunk.sourceUrl().isBlank() || chunk.pageTitle().isBlank()
+                    || chunk.version().isBlank()) {
+                throw new IllegalArgumentException(
+                        "Web chunk metadata is missing a required value."
+                );
+            }
+        }
     }
 
     private String createMetadata(
@@ -168,11 +182,18 @@ public class DynamicChunkRepository {
             int globalChunkIndex,
             String checksum
     ) {
+        validateMetadata(documentId, chunk, globalChunkIndex, checksum);
         Map<String, Object> metadata = new LinkedHashMap<>();
 
         metadata.put("doc_id", documentId);
         metadata.put("version", chunk.version());
-        metadata.put("source", "WEB");
+        metadata.put("source", chunk.sourceUrl());
+        metadata.put("source_type", "WEB");
+        metadata.put("page", Map.of(
+                "type", "web",
+                "url", chunk.sourceUrl(),
+                "title", chunk.pageTitle()
+        ));
         metadata.put("source_url", chunk.sourceUrl());
         metadata.put("page_title", chunk.pageTitle());
         metadata.put("chunk_index", globalChunkIndex);
@@ -188,6 +209,25 @@ public class DynamicChunkRepository {
             throw new IllegalStateException(
                     "Could not serialize chunk metadata.",
                     exception
+            );
+        }
+    }
+
+    private void validateMetadata(
+            Long documentId,
+            TextChunk chunk,
+            int chunkIndex,
+            String checksum
+    ) {
+        if (documentId == null || documentId <= 0
+                || chunk == null
+                || chunk.version() == null || chunk.version().isBlank()
+                || chunk.sourceUrl() == null || chunk.sourceUrl().isBlank()
+                || chunk.pageTitle() == null || chunk.pageTitle().isBlank()
+                || chunkIndex < 0
+                || checksum == null || !SHA256.matcher(checksum).matches()) {
+            throw new IllegalArgumentException(
+                    "Web chunk metadata is missing a required value."
             );
         }
     }

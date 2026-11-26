@@ -2,6 +2,7 @@ package com.devdocs.ai.ingeststatic.repository;
 
 import com.devdocs.ai.ingeststatic.chunk.ChunkEmbedding;
 import com.devdocs.ai.ingeststatic.chunk.TextChunk;
+import com.devdocs.ai.ingeststatic.config.EmbeddingProperties;
 import com.devdocs.ai.ingeststatic.dto.DocumentVersionInfo;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
@@ -19,6 +20,7 @@ import java.util.stream.Collectors;
 
 @Repository
 public class ChunkRepository {
+
 
     private static final String INSERT_CHUNK = """
             INSERT INTO chunks (
@@ -71,13 +73,16 @@ public class ChunkRepository {
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final int embeddingDimensions;
 
     public ChunkRepository(
             JdbcTemplate jdbcTemplate,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            EmbeddingProperties embeddingProperties
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
+        this.embeddingDimensions = embeddingProperties.dimensions();
     }
 
     public int insertAll(
@@ -243,9 +248,9 @@ public class ChunkRepository {
     }
 
     private String toVectorLiteral(List<Double> vector) {
-        if (vector == null || vector.size() != 1536) {
+        if (vector == null || vector.size() != embeddingDimensions) {
             throw new IllegalArgumentException(
-                    "Embedding must contain exactly 1536 dimensions."
+                    "Embedding dimensions do not match configured PostgreSQL dimensions."
             );
         }
 
@@ -267,16 +272,10 @@ public class ChunkRepository {
             TextChunk chunk,
             String source
     ) {
-        Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("doc_id", version.documentId());
-        metadata.put("version", version.versionLabel());
-        metadata.put("source", source);
-        metadata.put("page", chunk.pageNumber());
-        metadata.put("chunk_index", chunk.chunkIndex());
-        metadata.put("checksum", chunk.checksum());
-
         try {
-            return objectMapper.writeValueAsString(metadata);
+            return objectMapper.writeValueAsString(
+                    StaticChunkMetadataFactory.create(version, chunk, source)
+            );
         } catch (JacksonException exception) {
             throw new IllegalStateException(
                     "Could not serialize chunk metadata.",

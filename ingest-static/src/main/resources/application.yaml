@@ -22,8 +22,8 @@ management:
       show-details: always
 app:
   ingestion:
-    chunk-size: 1000
-    chunk-overlap: 200
+    chunk-size: ${CHUNK_SIZE:1000}
+    chunk-overlap: ${CHUNK_OVERLAP:200}
   embedding:
     api-url: ${GEMINI_API_URL:https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents}
     api-key: ${GEMINI_API_KEY:}

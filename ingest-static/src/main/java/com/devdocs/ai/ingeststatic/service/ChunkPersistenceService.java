@@ -8,6 +8,7 @@ import com.devdocs.ai.ingeststatic.repository.ChunkRepository;
 import com.devdocs.ai.ingeststatic.repository.DocumentVersionRepository;
 import com.devdocs.ai.ingeststatic.repository.StoredChunkInfo;
 import org.springframework.http.HttpStatus;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.multipart.MultipartFile;
@@ -18,11 +19,17 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class ChunkPersistenceService {
+
+    private static final Logger log = LoggerFactory.getLogger(ChunkPersistenceService.class);
 
     private final DocumentVersionRepository documentVersionRepository;
     private final ChunkRepository chunkRepository;
@@ -68,6 +75,7 @@ public class ChunkPersistenceService {
 
         if (version.checksum() == null
                 || !uploadedChecksum.equalsIgnoreCase(version.checksum())) {
+            log.warn("Rejected static ingestion because the source checksum did not match a registered version.");
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
                     "Uploaded PDF checksum does not match the registered document version."
@@ -86,18 +94,28 @@ public class ChunkPersistenceService {
             return handleExistingChunks(
                     version,
                     chunks,
-                    existingChunks
+                    existingChunks,
+                    source
             );
         }
 
         List<ChunkEmbedding> embeddings = embeddingService.embed(chunks);
 
-        int insertedCount = chunkWriteService.insertChunksWithEmbeddings(
-                version,
-                chunks,
-                embeddings,
-                source
-        );
+        int insertedCount;
+        try {
+            insertedCount = chunkWriteService.insertChunksWithEmbeddings(
+                    version, chunks, embeddings, source
+            );
+        } catch (DuplicateKeyException race) {
+            List<StoredChunkInfo> concurrentChunks =
+                    chunkRepository.findByVersionId(version.versionId());
+            if (concurrentChunks.isEmpty()) throw race;
+            log.info("Concurrent duplicate ingestion resolved for versionId={}", version.versionId());
+            return handleExistingChunks(version, chunks, concurrentChunks, source);
+        }
+
+        log.info("Persisted static PDF chunks: versionId={}, chunkCount={}",
+                version.versionId(), insertedCount);
 
         return new ChunkPersistenceResult(
                 version.versionId(),
@@ -109,21 +127,17 @@ public class ChunkPersistenceService {
     private ChunkPersistenceResult handleExistingChunks(
             DocumentVersionInfo version,
             List<TextChunk> chunks,
-            List<StoredChunkInfo> existingChunks
+            List<StoredChunkInfo> existingChunks,
+            String source
     ) {
-        if (existingChunks.size() != chunks.size()) {
-            throw new ResponseStatusException(
-                    HttpStatus.CONFLICT,
-                    "Existing chunk count does not match the newly extracted chunk count."
-            );
-        }
-
         Map<Integer, TextChunk> chunksByIndex = chunks.stream()
                 .collect(Collectors.toMap(
                         TextChunk::chunkIndex,
                         Function.identity()
                 ));
 
+        Set<Integer> storedIndices = new HashSet<>();
+        Set<Integer> missingEmbeddingIndices = new HashSet<>();
         for (StoredChunkInfo stored : existingChunks) {
             TextChunk extracted = chunksByIndex.get(stored.chunkIndex());
 
@@ -134,30 +148,64 @@ public class ChunkPersistenceService {
                         "Existing chunk content does not match the uploaded PDF."
                 );
             }
+            storedIndices.add(stored.chunkIndex());
+            if (stored.embeddingMissing()) {
+                missingEmbeddingIndices.add(stored.chunkIndex());
+            }
         }
 
-        List<Integer> missingIndices = existingChunks.stream()
-                .filter(StoredChunkInfo::embeddingMissing)
-                .map(StoredChunkInfo::chunkIndex)
+        List<TextChunk> newChunks = chunks.stream()
+                .filter(chunk -> !storedIndices.contains(chunk.chunkIndex()))
                 .toList();
+        Map<Integer, TextChunk> chunksToEmbed = new java.util.LinkedHashMap<>();
+        for (Integer index : missingEmbeddingIndices) {
+            chunksToEmbed.put(index, chunksByIndex.get(index));
+        }
+        for (TextChunk chunk : newChunks) {
+            chunksToEmbed.put(chunk.chunkIndex(), chunk);
+        }
 
-        if (!missingIndices.isEmpty()) {
-            List<TextChunk> missingChunks = missingIndices.stream()
-                    .map(chunksByIndex::get)
-                    .toList();
-
-            List<ChunkEmbedding> embeddings =
-                    embeddingService.embed(missingChunks);
-
-            chunkWriteService.updateMissingEmbeddings(
-                    version.versionId(),
-                    embeddings
+        if (!chunksToEmbed.isEmpty()) {
+            List<ChunkEmbedding> embeddings = embeddingService.embed(
+                    List.copyOf(chunksToEmbed.values())
             );
+            List<ChunkEmbedding> embeddingsForExisting = embeddings.stream()
+                    .filter(embedding -> missingEmbeddingIndices.contains(embedding.chunkIndex()))
+                    .toList();
+            if (!embeddingsForExisting.isEmpty()) {
+                chunkWriteService.updateMissingEmbeddings(
+                        version.versionId(), embeddingsForExisting
+                );
+            }
+            List<ChunkEmbedding> embeddingsForNew = embeddings.stream()
+                    .filter(embedding -> newChunks.stream().anyMatch(chunk ->
+                            chunk.chunkIndex() == embedding.chunkIndex()))
+                    .toList();
+            if (!newChunks.isEmpty()) {
+                try {
+                    chunkWriteService.insertChunksWithEmbeddings(
+                            version, newChunks, embeddingsForNew, source, chunks.size()
+                    );
+                } catch (DuplicateKeyException race) {
+                    List<StoredChunkInfo> refreshed =
+                            chunkRepository.findByVersionId(version.versionId());
+                    if (refreshed.size() <= existingChunks.size()) throw race;
+                    return handleExistingChunks(version, chunks, refreshed, source);
+                }
+            }
+        }
+
+        if (existingChunks.size() == chunks.size() && chunksToEmbed.isEmpty()) {
+            log.info("Static PDF ingestion is already complete: versionId={}, chunkCount={}",
+                    version.versionId(), existingChunks.size());
+        } else {
+            log.info("Completed partial static PDF ingestion: versionId={}, existingChunks={}, totalChunks={}",
+                    version.versionId(), existingChunks.size(), chunks.size());
         }
 
         return new ChunkPersistenceResult(
                 version.versionId(),
-                existingChunks.size(),
+                chunks.size(),
                 true
         );
     }

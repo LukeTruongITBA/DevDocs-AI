@@ -37,7 +37,10 @@ class PdfIngestionControllerTest {
     @BeforeEach
     void setUp() {
         PdfExtractionService pdfExtractionService =
-                new PdfExtractionService(new TextChunker(1000, 200));
+                new PdfExtractionService(
+                        new TextChunker(1000, 200),
+                        new com.devdocs.ai.ingeststatic.service.PdfLayoutTextExtractor()
+                );
 
         chunkPersistenceService = mock(ChunkPersistenceService.class);
 

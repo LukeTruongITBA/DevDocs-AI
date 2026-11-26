@@ -7,11 +7,15 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     public record ApiErrorResponse(
             int status,
@@ -77,6 +81,9 @@ public class GlobalExceptionHandler {
             HttpStatus status,
             String message
     ) {
+
+        log.warn("Web ingestion request failed: status={}, error={}",
+                status.value(), status.getReasonPhrase());
 
         ApiErrorResponse response = new ApiErrorResponse(
                 status.value(),

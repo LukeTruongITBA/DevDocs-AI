@@ -32,7 +32,7 @@ class GeminiEmbeddingServiceTest {
                 mockWebServer.url("/embed").toString(),
                 "test-api-key",
                 "models/gemini-embedding-001",
-                3,
+                1536,
                 2
         );
 
@@ -49,20 +49,12 @@ class GeminiEmbeddingServiceTest {
 
     @Test
     void shouldSendRequestAndReturnEmbedding() throws InterruptedException {
-        mockWebServer.enqueue(jsonResponse("""
-                {
-                  "embeddings": [
-                    {
-                      "values": [0.1, 0.2, 0.3]
-                    }
-                  ]
-                }
-                """));
+        mockWebServer.enqueue(jsonResponse(responseWithVector(0.1f, 0.2f, 0.3f)));
 
         List<float[]> result = service.embed(List.of(chunk(0, "Spring Boot documentation")));
 
         assertEquals(1, result.size());
-        assertEquals(3, result.get(0).length);
+        assertEquals(1536, result.get(0).length);
         assertEquals(0.1f, result.get(0)[0], 0.0001f);
         assertEquals(0.2f, result.get(0)[1], 0.0001f);
         assertEquals(0.3f, result.get(0)[2], 0.0001f);
@@ -78,22 +70,8 @@ class GeminiEmbeddingServiceTest {
 
     @Test
     void shouldSplitChunksIntoBatches() {
-        mockWebServer.enqueue(jsonResponse("""
-                {
-                  "embeddings": [
-                    {"values": [0.1, 0.2, 0.3]},
-                    {"values": [0.4, 0.5, 0.6]}
-                  ]
-                }
-                """));
-
-        mockWebServer.enqueue(jsonResponse("""
-                {
-                  "embeddings": [
-                    {"values": [0.7, 0.8, 0.9]}
-                  ]
-                }
-                """));
+        mockWebServer.enqueue(jsonResponse(responseFor(0.1f, 0.4f)));
+        mockWebServer.enqueue(jsonResponse(responseFor(0.7f)));
 
         List<float[]> result = service.embed(List.of(
                 chunk(0, "Chunk one"),
@@ -102,9 +80,9 @@ class GeminiEmbeddingServiceTest {
         ));
 
         assertEquals(3, result.size());
-        assertEquals(3, result.get(0).length);
-        assertEquals(3, result.get(1).length);
-        assertEquals(3, result.get(2).length);
+        assertEquals(1536, result.get(0).length);
+        assertEquals(1536, result.get(1).length);
+        assertEquals(1536, result.get(2).length);
         assertEquals(2, mockWebServer.getRequestCount());
     }
 
@@ -122,7 +100,7 @@ class GeminiEmbeddingServiceTest {
                 mockWebServer.url("/embed").toString(),
                 "",
                 "models/gemini-embedding-001",
-                3,
+                1536,
                 2
         );
 
@@ -170,5 +148,30 @@ class GeminiEmbeddingServiceTest {
                 .setResponseCode(200)
                 .setHeader("Content-Type", MediaType.APPLICATION_JSON_VALUE)
                 .setBody(body);
+    }
+
+    private String responseFor(float... firstValues) {
+        StringBuilder response = new StringBuilder("{\"embeddings\":[");
+        for (int i = 0; i < firstValues.length; i++) {
+            if (i > 0) response.append(',');
+            response.append("{\"values\":[").append(firstValues[i]);
+            for (int dimension = 1; dimension < 1536; dimension++) {
+                response.append(",0.0");
+            }
+            response.append("]}");
+        }
+        return response.append("]}").toString();
+    }
+
+    private String responseWithVector(float... initialValues) {
+        StringBuilder response = new StringBuilder(
+                "{\"embeddings\":[{\"values\":["
+        );
+        for (int dimension = 0; dimension < 1536; dimension++) {
+            if (dimension > 0) response.append(',');
+            response.append(dimension < initialValues.length
+                    ? initialValues[dimension] : 0.0f);
+        }
+        return response.append("]}]}").toString();
     }
 }

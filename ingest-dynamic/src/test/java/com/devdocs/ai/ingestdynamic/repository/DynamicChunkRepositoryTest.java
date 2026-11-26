@@ -17,6 +17,8 @@ import java.sql.PreparedStatement;
 import java.sql.Types;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -39,7 +41,7 @@ class DynamicChunkRepositoryTest {
                 "https://example.com/embedding",
                 "test-key",
                 "test-model",
-                3,
+                1536,
                 10
         );
 
@@ -66,8 +68,8 @@ class DynamicChunkRepositoryTest {
         );
 
         List<float[]> embeddings = List.of(
-                new float[]{0.1f, 0.2f, 0.3f},
-                new float[]{0.4f, 0.5f, 0.6f}
+                vector(0.1f, 0.2f, 0.3f),
+                vector(0.4f, 0.5f, 0.6f)
         );
 
         when(objectMapper.writeValueAsString(anyMap()))
@@ -102,8 +104,27 @@ class DynamicChunkRepositoryTest {
 
         verify(statement, times(2)).setNull(4, Types.INTEGER);
 
-        verify(statement).setString(7, "[0.1,0.2,0.3]");
-        verify(statement).setString(7, "[0.4,0.5,0.6]");
+        ArgumentCaptor<String> vectors = ArgumentCaptor.forClass(String.class);
+        verify(statement, times(2)).setString(eq(7), vectors.capture());
+        assertTrue(vectors.getAllValues().getFirst().startsWith("[0.1,0.2,0.3,0.0"));
+        assertEquals(1536, vectors.getAllValues().getFirst().split(",").length);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> metadataCaptor =
+                (ArgumentCaptor<Map<String, Object>>) (ArgumentCaptor<?>)
+                        ArgumentCaptor.forClass(Map.class);
+        verify(objectMapper, times(2)).writeValueAsString(metadataCaptor.capture());
+        Map<String, Object> metadata = metadataCaptor.getAllValues().getFirst();
+        assertTrue(metadata.keySet().containsAll(Set.of(
+                "doc_id", "version", "source", "page", "chunk_index", "checksum"
+        )));
+        assertEquals("https://docs.example.com/a", metadata.get("source"));
+        assertEquals("WEB", metadata.get("source_type"));
+        assertEquals(Map.of(
+                "type", "web",
+                "url", "https://docs.example.com/a",
+                "title", "Page A"
+        ), metadata.get("page"));
     }
 
     @Test
@@ -163,7 +184,7 @@ class DynamicChunkRepositoryTest {
         );
 
         List<float[]> embeddings = List.of(
-                new float[]{0.1f, Float.NaN, 0.3f}
+                vector(0.1f, Float.NaN, 0.3f)
         );
 
         assertThrows(
@@ -174,5 +195,30 @@ class DynamicChunkRepositoryTest {
         );
 
         verifyNoInteractions(jdbcTemplate);
+    }
+
+    @Test
+    void shouldRejectMissingWebChunkMetadataBeforeDatabaseWrite() {
+        assertThrows(IllegalArgumentException.class, () ->
+                repository.replaceChunks(
+                        1L, 2L, Collections.singletonList(null),
+                        List.of(vector(0.1f))
+                ));
+        verifyNoInteractions(jdbcTemplate);
+    }
+
+    @Test
+    void shouldRejectConfiguredDimensionThatDoesNotMatchDatabaseVector() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new EmbeddingProperties(
+                        "https://example.com/embedding", "key", "model", 768, 10
+                ));
+        verifyNoInteractions(jdbcTemplate);
+    }
+
+    private float[] vector(float... initialValues) {
+        float[] vector = new float[1536];
+        System.arraycopy(initialValues, 0, vector, 0, initialValues.length);
+        return vector;
     }
 }

@@ -15,6 +15,8 @@ import com.devdocs.ai.ingestdynamic.embedding.GeminiEmbeddingService;
 import com.devdocs.ai.ingestdynamic.repository.DynamicChunkRepository;
 import com.devdocs.ai.ingestdynamic.util.ChecksumUtils;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -22,6 +24,8 @@ import java.util.List;
 
 @Service
 public class DynamicIngestionService {
+
+    private static final Logger log = LoggerFactory.getLogger(DynamicIngestionService.class);
 
     private final WebsiteCrawler websiteCrawler;
     private final DynamicTextChunker textChunker;
@@ -54,6 +58,9 @@ public class DynamicIngestionService {
 
         // 2. Reject incomplete crawls before modifying any data.
         if (!crawlResult.complete()) {
+            log.warn("Rejected web ingestion because the crawl was incomplete: fetchedPages={}, retainedPages={}, failedPages={}, pendingPages={}",
+                    crawlResult.fetchedPages(), crawlResult.pages().size(),
+                    crawlResult.failures().size(), crawlResult.pendingPages());
             String failureDetails = crawlResult.failures()
                     .stream()
                     .limit(3)
@@ -117,6 +124,9 @@ public class DynamicIngestionService {
         if (existingVersion != null
                 && checksum.equalsIgnoreCase(existingVersion.checksum())) {
 
+            log.info("Skipped unchanged web ingestion: documentId={}, versionId={}, pages={}",
+                    documentId, existingVersion.id(), pages.size());
+
             return new IngestionResult(
                     documentId,
                     existingVersion.id(),
@@ -168,6 +178,9 @@ public class DynamicIngestionService {
                 chunks,
                 embeddings
         );
+
+        log.info("Persisted web ingestion: documentId={}, versionId={}, pageCount={}, chunkCount={}",
+                documentId, version.id(), pages.size(), chunks.size());
 
         return new IngestionResult(
                 documentId,
