@@ -18,6 +18,44 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class EmbeddingServiceTest {
 
     @Test
+    void shouldApplyConfiguredTimeoutsToOllamaTransport() throws Exception {
+        EmbeddingProperties properties = new EmbeddingProperties(
+                "https://embedding.example.test/api/embed", "",
+                "nomic-embed-text:137m-v1.5-fp16", 768, 64, "ollama");
+        var factory = EmbeddingService.timeoutRequestFactory(properties);
+        var connect = factory.getClass().getDeclaredField("connectTimeout");
+        var read = factory.getClass().getDeclaredField("readTimeout");
+        connect.setAccessible(true);
+        read.setAccessible(true);
+        assertEquals(5_000, connect.getInt(factory));
+        assertEquals(120_000, read.getInt(factory));
+    }
+
+    @Test
+    void shouldUseOllamaDocumentPrefixAndValidate768Dimensions() {
+        String apiUrl = "https://embedding.example.test/api/embed";
+        EmbeddingProperties properties = new EmbeddingProperties(
+                apiUrl, "", "nomic-embed-text:137m-v1.5-fp16", 768, 64, "ollama"
+        );
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        String values = IntStream.range(0, 768).mapToObj(i -> i == 0 ? "0.5" : "0.0")
+                .collect(Collectors.joining(","));
+        server.expect(requestTo(apiUrl))
+                .andExpect(method(org.springframework.http.HttpMethod.POST))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("search_document: Example chunk")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("nomic-embed-text:137m-v1.5-fp16")))
+                .andRespond(withSuccess("{\"embeddings\":[[" + values + "]]}", MediaType.APPLICATION_JSON));
+
+        var result = new EmbeddingService(builder.build(), properties)
+                .embed(List.of(new TextChunk(0, 1, "Example chunk", "a".repeat(64))));
+
+        assertEquals(768, result.getFirst().vector().size());
+        assertEquals(0.5, result.getFirst().vector().getFirst());
+        server.verify();
+    }
+
+    @Test
     void shouldSendConfiguredGeminiModelAndDatabaseDimension() {
         String apiUrl = "https://embedding.example.test/batch";
         EmbeddingProperties properties = new EmbeddingProperties(

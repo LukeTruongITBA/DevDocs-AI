@@ -9,7 +9,10 @@ public record EmbeddingProperties(
         String apiKey,
         String model,
         int dimensions,
-        int batchSize
+        int batchSize,
+        String provider,
+        long connectTimeoutMillis,
+        long readTimeoutMillis
 ) {
 
         public EmbeddingProperties {
@@ -28,5 +31,35 @@ public record EmbeddingProperties(
                 if (batchSize <= 0 || batchSize > 2048) {
                         throw new IllegalArgumentException("Embedding batch size must be between 1 and 2048");
                 }
+                if (provider == null || provider.isBlank()) {
+                        throw new IllegalArgumentException("Embedding provider must not be blank");
+                }
+                if (provider.equalsIgnoreCase("ollama") && dimensions != 768) {
+                        throw new IllegalArgumentException("Ollama embedding dimensions must be 768");
+                }
+                if (connectTimeoutMillis < 0 || readTimeoutMillis < 0) {
+                        throw new IllegalArgumentException("Embedding timeouts must not be negative");
+                }
+        }
+
+        public EmbeddingProperties(
+                String apiUrl,
+                String apiKey,
+                String model,
+                int dimensions,
+                int batchSize
+        ) {
+                this(apiUrl, apiKey, model, dimensions, batchSize, "gemini", 5_000, 120_000);
+        }
+
+        public EmbeddingProperties(
+                String apiUrl, String apiKey, String model, int dimensions,
+                int batchSize, String provider
+        ) {
+                this(apiUrl, apiKey, model, dimensions, batchSize, provider, 5_000, 120_000);
+        }
+
+        public boolean isOllama() {
+                return "ollama".equalsIgnoreCase(provider);
         }
 }

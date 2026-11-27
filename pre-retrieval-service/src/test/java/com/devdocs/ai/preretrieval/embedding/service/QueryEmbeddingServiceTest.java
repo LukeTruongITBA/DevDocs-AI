@@ -9,6 +9,8 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -20,6 +22,19 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.http.HttpMethod.POST;
 
 class QueryEmbeddingServiceTest {
+
+    @Test
+    void shouldApplyConfiguredTimeoutsToOllamaTransport() throws Exception {
+        EmbeddingProperties properties = new EmbeddingProperties(
+                API_URL, "", "nomic-embed-text:137m-v1.5-fp16", 768, 64, "ollama");
+        var factory = QueryEmbeddingService.timeoutRequestFactory(properties);
+        var connect = factory.getClass().getDeclaredField("connectTimeout");
+        var read = factory.getClass().getDeclaredField("readTimeout");
+        connect.setAccessible(true);
+        read.setAccessible(true);
+        assertEquals(5_000, connect.getInt(factory));
+        assertEquals(120_000, read.getInt(factory));
+    }
 
     private static final String API_URL =
             "https://example.com/embedding";
@@ -45,6 +60,26 @@ class QueryEmbeddingServiceTest {
                         64
                 )
         );
+    }
+
+    @Test
+    void shouldUseOllamaQueryPrefixAnd768Dimensions() {
+        EmbeddingProperties properties = new EmbeddingProperties(
+                API_URL, "", "nomic-embed-text:137m-v1.5-fp16", 768, 64, "ollama");
+        QueryEmbeddingService ollama = new QueryEmbeddingService(restClientBuilder.build(), properties);
+        String values = IntStream.range(0, 768).mapToObj(i -> i == 0 ? "0.7" : "0.0")
+                .collect(Collectors.joining(","));
+        mockServer.expect(requestTo(API_URL))
+                .andExpect(method(POST))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("search_query: spring boot")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("nomic-embed-text:137m-v1.5-fp16")))
+                .andRespond(withSuccess("{\"embeddings\":[[" + values + "]]}", MediaType.APPLICATION_JSON));
+
+        List<Double> result = ollama.embed("  spring boot  ");
+
+        assertEquals(768, result.size());
+        assertEquals(0.7, result.getFirst());
+        mockServer.verify();
     }
 
     @Test

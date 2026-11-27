@@ -7,9 +7,11 @@ import com.devdocs.ai.ingeststatic.dto.DocumentVersionInfo;
 import com.devdocs.ai.ingeststatic.repository.ChunkRepository;
 import com.devdocs.ai.ingeststatic.repository.DocumentVersionRepository;
 import com.devdocs.ai.ingeststatic.repository.StoredChunkInfo;
+import com.devdocs.ai.ingeststatic.config.EmbeddingProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -35,6 +37,7 @@ public class ChunkPersistenceService {
     private final ChunkRepository chunkRepository;
     private final EmbeddingService embeddingService;
     private final ChunkWriteService chunkWriteService;
+    private final boolean persistenceReady;
 
     public ChunkPersistenceService(
             DocumentVersionRepository documentVersionRepository,
@@ -42,10 +45,24 @@ public class ChunkPersistenceService {
             EmbeddingService embeddingService,
             ChunkWriteService chunkWriteService
     ) {
+        this(documentVersionRepository, chunkRepository, embeddingService,
+                chunkWriteService, null);
+    }
+
+    @Autowired
+    public ChunkPersistenceService(
+            DocumentVersionRepository documentVersionRepository,
+            ChunkRepository chunkRepository,
+            EmbeddingService embeddingService,
+            ChunkWriteService chunkWriteService,
+            EmbeddingProperties embeddingProperties
+    ) {
         this.documentVersionRepository = documentVersionRepository;
         this.chunkRepository = chunkRepository;
         this.embeddingService = embeddingService;
         this.chunkWriteService = chunkWriteService;
+        this.persistenceReady = embeddingProperties == null
+                || !embeddingProperties.isOllama();
     }
 
     public ChunkPersistenceResult persist(
@@ -86,6 +103,13 @@ public class ChunkPersistenceService {
                 && !version.sourceUri().isBlank()
                 ? version.sourceUri()
                 : file.getOriginalFilename();
+
+        if (!persistenceReady) {
+            throw new IllegalStateException(
+                    "Ollama embeddings require the pending VECTOR(768) dual-column migration; "
+                            + "no chunks were persisted."
+            );
+        }
 
         List<StoredChunkInfo> existingChunks =
                 chunkRepository.findByVersionId(version.versionId());

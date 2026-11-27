@@ -46,6 +46,12 @@ public class VectorSearchService {
 
         List<Double> embedding = request.embedding();
 
+        if (embedding != null && embedding.size() == 768) {
+            throw new IllegalArgumentException(
+                    "Ollama retrieval is disabled until chunks.embedding_ollama VECTOR(768) is migrated."
+            );
+        }
+
         if (embedding == null || embedding.size() != EMBEDDING_DIMENSIONS) {
             throw new IllegalArgumentException(
                     "Embedding must contain exactly 1536 dimensions"
