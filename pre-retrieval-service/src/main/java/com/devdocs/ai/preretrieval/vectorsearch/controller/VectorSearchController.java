@@ -36,10 +36,11 @@ public class VectorSearchController {
     @PostMapping("/search")
     public ResponseEntity<List<VectorSearchResult>> search(
             @RequestBody VectorSearchRequest request,
-            @RequestParam(value = "filter", required = false) List<String> filters,
+            jakarta.servlet.http.HttpServletRequest httpRequest,
             @RequestParam(value = "filterMode", required = false) String filterMode
     ) {
-        MetadataFilter filter = MetadataFilterParser.parse(filters, filterMode);
+        MetadataFilter filter = MetadataFilterParser.parse(
+                MetadataFilterParser.rawValues(httpRequest.getParameterValues("filter")), filterMode);
         return ResponseEntity.ok(
                 vectorSearchService.search(
                         request == null ? null : request.withFilter(filter))

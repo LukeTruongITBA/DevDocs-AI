@@ -182,6 +182,7 @@ services:
       - --model-id=cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
       - --revision=1427fd652930e4ba29e8149678df786c240d8825
       - --auto-truncate
+      - --max-client-batch-size=32
     ports:
       - "8086:80"
     volumes:

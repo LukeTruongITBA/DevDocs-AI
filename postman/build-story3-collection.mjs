@@ -108,6 +108,15 @@ pm.test('reports both problems', () => { if (json().details.length !== 2) fail(J
 status(400);
 pm.test('mentions filterMode', () => { if (!json().details.some((d) => d.includes('filterMode'))) fail(); });`),
 
+  item('11 Single "in" filter keeps its comma-separated list',
+    'A lone filter parameter is not split on commas.',
+    [['filter', 'document_id:in:{{oracleDocId}},{{mkdocsDocId}}']],
+    'How do I configure the theme?', {}, `
+status(200);
+pm.test('one condition with both ids', () => { const c = json().appliedFilter.conditions; if (c.length !== 1 || !c[0].endsWith(pm.variables.get('oracleDocId') + ',' + pm.variables.get('mkdocsDocId'))) fail(JSON.stringify(c)); });
+const ids = [pm.variables.get('oracleDocId'), pm.variables.get('mkdocsDocId')];
+all('every result is in the list', (x) => ids.includes(String(x.documentId)));`),
+
   item('10 SQL injection text stays a bound value',
     "The value is bound as a literal; it matches no version label and returns no rows.",
     [['filter', "version:eq:1' OR '1'='1"]],

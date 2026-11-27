@@ -51,6 +51,15 @@ public class WebsiteFetcher {
         Connection.Response response = fetchResponse(url);
         String contentType = response.contentType();
         byte[] content = response.bodyAsBytes();
+        // Jsoup's maxBodySize truncates silently. A body that reaches the cap
+        // may be cut off; PDFBox could then rebuild a partial document that
+        // looks complete, so reject it instead of ingesting a fragment.
+        if (content.length >= MAX_RESPONSE_SIZE_BYTES) {
+            throw new IOException(
+                    "Remote PDF reached the " + MAX_RESPONSE_SIZE_BYTES
+                            + "-byte limit and may be truncated; it was not ingested."
+            );
+        }
         boolean pdfContentType = contentType != null
                 && contentType.toLowerCase(Locale.ROOT)
                 .split(";")[0].trim().equals("application/pdf");

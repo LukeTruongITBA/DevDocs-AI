@@ -38,6 +38,7 @@ public class RerankingService {
     /** Number of vector candidates to retrieve before reranking to {@code topK}. */
     public int candidateCount(int topK) {
         int wider = properties.enabled() ? Math.max(topK, properties.candidateCount()) : topK;
+        // topK above the rerank batch is allowed; the extra rows keep vector order.
         return Math.min(wider, RerankingProperties.MAX_CANDIDATES);
     }
 
@@ -63,19 +64,25 @@ public class RerankingService {
 
         long started = System.nanoTime();
         try {
-            List<String> texts = chunks.stream()
+            // TEI rejects more than --max-client-batch-size texts per call, so
+            // only the head is scored; any tail keeps vector order after it.
+            int scored = Math.min(chunks.size(), RerankingProperties.MAX_RERANK_BATCH);
+            List<String> texts = chunks.subList(0, scored).stream()
                     .map(chunk -> chunk.content() == null ? "" : chunk.content())
                     .toList();
             double[] scores = client.score(query, texts);
             long latencyMs = (System.nanoTime() - started) / 1_000_000;
 
             List<RerankedChunk> reranked = new ArrayList<>(chunks.size());
-            for (int i = 0; i < chunks.size(); i++) {
+            for (int i = 0; i < scored; i++) {
                 reranked.add(new RerankedChunk(chunks.get(i), scores[i], i + 1));
             }
             // Ties keep vector order (stable sort on originalRank).
             reranked.sort(Comparator.comparing(RerankedChunk::rerankScore, Comparator.reverseOrder())
                     .thenComparing(RerankedChunk::originalRank));
+            for (int i = scored; i < chunks.size(); i++) {
+                reranked.add(new RerankedChunk(chunks.get(i), chunks.get(i).similarity(), i + 1));
+            }
 
             log.info("Cross-encoder rerank: model={}, candidates={}, latencyMs={}",
                     properties.model(), chunks.size(), latencyMs);

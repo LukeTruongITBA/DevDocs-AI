@@ -94,6 +94,37 @@ class FilterEndpointsTest {
     }
 
     @Test
+    void singleFilterWithCommasIsNotSplit() throws Exception {
+        when(pipelineService.retrieve(any(QueryPipelineRequest.class), any(MetadataFilter.class)))
+                .thenReturn(response());
+
+        mvc.perform(post("/api/query/retrieve")
+                        .param("filter", "document_id:in:12,13")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"query\":\"q\",\"topK\":5}"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<MetadataFilter> captor = ArgumentCaptor.forClass(MetadataFilter.class);
+        verify(pipelineService).retrieve(any(QueryPipelineRequest.class), captor.capture());
+        assertEquals(List.of("document_id in 12,13"), captor.getValue().describe());
+    }
+
+    @Test
+    void singleVectorSearchFilterValueWithCommaIsNotSplit() throws Exception {
+        when(vectorSearchService.search(any())).thenReturn(List.of());
+
+        mvc.perform(post("/api/retrieval/search")
+                        .param("filter", "source:eq:https://x.org/a,b")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"embedding\":[0.1],\"topK\":5}"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<VectorSearchRequest> captor = ArgumentCaptor.forClass(VectorSearchRequest.class);
+        verify(vectorSearchService).search(captor.capture());
+        assertEquals(List.of("source eq https://x.org/a,b"), captor.getValue().filter().describe());
+    }
+
+    @Test
     void vectorSearchIgnoresFilterSuppliedInJsonBody() throws Exception {
         when(vectorSearchService.search(any())).thenReturn(List.of());
 

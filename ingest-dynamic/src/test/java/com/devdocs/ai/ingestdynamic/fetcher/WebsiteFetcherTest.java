@@ -154,6 +154,32 @@ class WebsiteFetcherTest {
     }
 
     @Test
+    void shouldRejectPdfThatReachesTheSizeLimitInsteadOfTruncating() throws IOException {
+        startTestServer();
+        byte[] oversized = new byte[5 * 1024 * 1024 + 10];
+        System.arraycopy("%PDF-1.7".getBytes(StandardCharsets.UTF_8), 0, oversized, 0, 8);
+        server.createContext("/big.pdf", exchange -> {
+            exchange.getResponseHeaders().set("Content-Type", "application/pdf");
+            exchange.sendResponseHeaders(200, oversized.length);
+            try (var outputStream = exchange.getResponseBody()) {
+                outputStream.write(oversized);
+            } catch (IOException ignored) {
+                // client stops reading at the cap
+            }
+        });
+
+        UrlSecurityValidator validator = mock(UrlSecurityValidator.class);
+        when(validator.validate(anyString()))
+                .thenAnswer(invocation -> URI.create(invocation.getArgument(0)));
+        WebsiteFetcher fetcher = new WebsiteFetcher(properties, validator);
+
+        IOException exception = org.junit.jupiter.api.Assertions.assertThrows(IOException.class,
+                () -> fetcher.fetchPdf(localUrl("/big.pdf")));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                exception.getMessage().contains("may be truncated"), exception.getMessage());
+    }
+
+    @Test
     void shouldFollowSameOriginRedirect() throws IOException {
         startTestServer();
 

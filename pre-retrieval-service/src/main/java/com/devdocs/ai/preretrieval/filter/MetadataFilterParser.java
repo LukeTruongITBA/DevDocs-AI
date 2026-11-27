@@ -62,6 +62,17 @@ public final class MetadataFilterParser {
         return new MetadataFilter(mode, conditions);
     }
 
+    /**
+     * Wraps raw servlet parameter values. Controllers must read
+     * {@code request.getParameterValues("filter")} rather than binding
+     * {@code List<String>}/{@code String[]}: Spring's conversion splits a
+     * single parameter on commas, which would break {@code in} lists and
+     * values containing commas.
+     */
+    public static List<String> rawValues(String[] parameterValues) {
+        return parameterValues == null ? null : List.of(parameterValues);
+    }
+
     /** Whitelist description returned with every 400: field -> operators and value type. */
     public static Map<String, Map<String, Object>> validFields() {
         Map<String, Map<String, Object>> fields = new LinkedHashMap<>();

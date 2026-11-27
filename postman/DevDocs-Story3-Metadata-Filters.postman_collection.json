@@ -610,6 +610,69 @@
       ]
     },
     {
+      "name": "11 Single \"in\" filter keeps its comma-separated list",
+      "request": {
+        "description": "A lone filter parameter is not split on commas.",
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"query\": \"How do I configure the theme?\",\n  \"topK\": 5\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/query/retrieve?filter=document_id:in:{{oracleDocId}},{{mkdocsDocId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "query",
+            "retrieve"
+          ],
+          "query": [
+            {
+              "key": "filter",
+              "value": "document_id:in:{{oracleDocId}},{{mkdocsDocId}}"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "",
+              "const fail = (m) => { throw new Error(m); };",
+              "const json = () => pm.response.json();",
+              "const status = (code) => pm.test('HTTP ' + code, () => { if (pm.response.code !== code) fail('got ' + pm.response.code); });",
+              "const all = (label, pred) => pm.test(label, () => {",
+              "  const r = json().results; if (!Array.isArray(r) || r.length === 0) fail('expected at least one result');",
+              "  r.forEach((x, i) => { if (!pred(x)) fail('result #' + i + ' (chunk ' + x.id + ') violates filter'); });",
+              "});",
+              "const pageOf = (x) => x.pageNumber ?? (x.metadata && x.metadata.page && x.metadata.page.pdf_page_number);",
+              "",
+              "status(200);",
+              "pm.test('one condition with both ids', () => { const c = json().appliedFilter.conditions; if (c.length !== 1 || !c[0].endsWith(pm.variables.get('oracleDocId') + ',' + pm.variables.get('mkdocsDocId'))) fail(JSON.stringify(c)); });",
+              "const ids = [pm.variables.get('oracleDocId'), pm.variables.get('mkdocsDocId')];",
+              "all('every result is in the list', (x) => ids.includes(String(x.documentId)));"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "10 SQL injection text stays a bound value",
       "request": {
         "description": "The value is bound as a literal; it matches no version label and returns no rows.",

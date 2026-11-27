@@ -90,7 +90,27 @@ class RerankingServiceTest {
     void candidateCountWidensToConfiguredTopNAndCaps() {
         assertEquals(20, service.candidateCount(5));
         assertEquals(30, service.candidateCount(30));
-        assertEquals(100, new RerankingService(client, properties(true, 100)).candidateCount(5));
+        assertEquals(100, service.candidateCount(150));
+        assertThrows(IllegalArgumentException.class, () -> properties(true, 33));
+    }
+
+    @Test
+    void scoresAtMostOneTeiBatchAndKeepsTailInVectorOrder() {
+        List<VectorSearchResult> many = new java.util.ArrayList<>();
+        for (long id = 1; id <= 40; id++) {
+            many.add(result(id, "c" + id, 1.0 - id / 100.0));
+        }
+        double[] scores = new double[32];
+        scores[31] = 0.99; // last scored chunk (id 32) becomes first
+        when(client.score(anyString(), anyList())).thenReturn(scores);
+
+        List<RerankedChunk> out = service.rerank("q", many);
+
+        org.mockito.Mockito.verify(client).score(org.mockito.ArgumentMatchers.eq("q"),
+                org.mockito.ArgumentMatchers.argThat(texts -> texts.size() == 32));
+        assertEquals(40, out.size());
+        assertEquals(32L, out.getFirst().chunk().id());
+        assertEquals(List.of(33L, 34L, 35L, 36L, 37L, 38L, 39L, 40L), ids(out.subList(32, 40)));
     }
 
     @Test

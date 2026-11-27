@@ -8,6 +8,7 @@ import com.devdocs.ai.preretrieval.query.dto.QueryPipelineRequest;
 import com.devdocs.ai.preretrieval.query.dto.QueryPipelineResponse;
 import com.devdocs.ai.preretrieval.query.service.QueryAnswerService;
 import com.devdocs.ai.preretrieval.query.service.QueryPipelineService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -37,10 +38,10 @@ public class QueryPipelineController {
     @PostMapping("/retrieve")
     public ResponseEntity<QueryPipelineResponse> retrieve(
             @RequestBody QueryPipelineRequest request,
-            @RequestParam(value = "filter", required = false) List<String> filters,
+            HttpServletRequest httpRequest,
             @RequestParam(value = "filterMode", required = false) String filterMode
     ) {
-        MetadataFilter filter = MetadataFilterParser.parse(filters, filterMode);
+        MetadataFilter filter = MetadataFilterParser.parse(rawFilters(httpRequest), filterMode);
         return ResponseEntity.ok(
                 filter == null
                         ? queryPipelineService.retrieve(request)
@@ -51,10 +52,10 @@ public class QueryPipelineController {
     @PostMapping("/answer")
     public ResponseEntity<QueryAnswerResponse> answer(
             @RequestBody QueryPipelineRequest request,
-            @RequestParam(value = "filter", required = false) List<String> filters,
+            HttpServletRequest httpRequest,
             @RequestParam(value = "filterMode", required = false) String filterMode
     ) {
-        MetadataFilter filter = MetadataFilterParser.parse(filters, filterMode);
+        MetadataFilter filter = MetadataFilterParser.parse(rawFilters(httpRequest), filterMode);
         return ResponseEntity.ok(
                 filter == null
                         ? queryAnswerService.answer(request)
@@ -69,5 +70,9 @@ public class QueryPipelineController {
         return ResponseEntity
                 .status(HttpStatus.BAD_REQUEST)
                 .body(Map.of("error", exception.getMessage()));
+    }
+
+    private static List<String> rawFilters(HttpServletRequest httpRequest) {
+        return MetadataFilterParser.rawValues(httpRequest.getParameterValues("filter"));
     }
 }

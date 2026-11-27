@@ -49,7 +49,7 @@ The TEI container used about 3.6 GB RAM. Latency scales roughly with candidate c
 |---|---|---|
 | `RERANKER_ENABLED` | `true` | `false` keeps vector order and makes no model call |
 | `RERANKER_URL` | `http://localhost:8086` (compose: `http://reranker:80`) | TEI base URL |
-| `RERANKER_CANDIDATE_COUNT` | `20` | wider top-N before reranking |
+| `RERANKER_CANDIDATE_COUNT` | `20` (max 32 = TEI `--max-client-batch-size`) | wider top-N before reranking; with `topK` > 32 only the first 32 are reranked, the rest keep vector order |
 | `RERANKER_CONNECT_TIMEOUT_MILLIS` / `RERANKER_READ_TIMEOUT_MILLIS` | `2000` / `10000` | after either expires, vector order is kept |
 | `RERANKER_MODEL` | pinned id@revision | label reported in responses |
 

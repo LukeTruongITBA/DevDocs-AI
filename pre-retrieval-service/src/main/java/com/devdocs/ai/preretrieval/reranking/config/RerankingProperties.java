@@ -22,6 +22,9 @@ public record RerankingProperties(
         long connectTimeoutMillis,
         long readTimeoutMillis
 ) {
+    /** Must not exceed TEI --max-client-batch-size (set to 32 in compose.yaml). */
+    public static final int MAX_RERANK_BATCH = 32;
+    /** Vector search hard cap (topK limit). */
     public static final int MAX_CANDIDATES = 100;
 
     @ConstructorBinding
@@ -29,9 +32,9 @@ public record RerankingProperties(
         if (enabled && (url == null || url.isBlank())) {
             throw new IllegalArgumentException("Reranker URL must not be blank when enabled.");
         }
-        if (candidateCount < 1 || candidateCount > MAX_CANDIDATES) {
+        if (candidateCount < 1 || candidateCount > MAX_RERANK_BATCH) {
             throw new IllegalArgumentException(
-                    "Reranker candidate count must be between 1 and " + MAX_CANDIDATES + ".");
+                    "Reranker candidate count must be between 1 and " + MAX_RERANK_BATCH + ".");
         }
         if (connectTimeoutMillis <= 0 || readTimeoutMillis <= 0) {
             throw new IllegalArgumentException("Reranker timeouts must be positive.");
