@@ -52,6 +52,18 @@ public class DocumentController {
         return ResponseEntity.ok(documentService.findAll());
     }
 
+    /**
+     * Indexed lookup of a WEB document by its exact source URI. Returns a
+     * list with zero or one element, so "not found" is never confused with
+     * a missing route.
+     */
+    @GetMapping("/web")
+    public ResponseEntity<List<Document>> findWebBySourceUri(
+            @RequestParam String sourceUri
+    ) {
+        return ResponseEntity.ok(documentService.findWebBySourceUri(sourceUri));
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<Document> findById(
             @PathVariable Long id

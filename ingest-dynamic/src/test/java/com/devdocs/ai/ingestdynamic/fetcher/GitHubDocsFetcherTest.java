@@ -153,4 +153,23 @@ class GitHubDocsFetcherTest {
         assertEquals(com.devdocs.ai.ingestdynamic.dto.CrawlFailureStage.LIMIT,
                 result.failures().getFirst().stage());
     }
+
+    @Test
+    void rejectsTruncatedRepositoryTreeWithoutFetchingFiles() throws Exception {
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("""
+                        {"truncated":true,"tree":[{"path":"docs/guide.md","type":"blob"}]}
+                        """));
+
+        GitHubDocsFetcher.Result result = fetcher.fetch(
+                "https://github.com/example/project/tree/main/docs", "main"
+        );
+
+        assertTrue(result.pages().isEmpty());
+        assertEquals(1, result.failures().size());
+        assertTrue(result.failures().getFirst().message().contains("truncated"),
+                result.failures().getFirst().message());
+        assertEquals(1, server.getRequestCount(), "no raw file should be fetched");
+    }
 }

@@ -119,6 +119,15 @@ public class GitHubDocsFetcher {
                         "GitHub returned an invalid repository tree."
                 );
             }
+            // The recursive tree API caps very large repositories and sets
+            // truncated=true; documentation files could be missing, so the
+            // source must not be treated as complete.
+            if (tree.path("truncated").asBoolean(false)) {
+                throw new IllegalStateException(
+                        "GitHub repository tree listing is truncated; "
+                                + "documentation files may be missing."
+                );
+            }
 
             List<String> documentPaths = new ArrayList<>();
             for (JsonNode entry : entries) {

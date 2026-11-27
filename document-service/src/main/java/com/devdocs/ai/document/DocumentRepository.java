@@ -93,6 +93,19 @@ public class DocumentRepository {
         return jdbcTemplate.query(sql, documentRowMapper);
     }
 
+    /** Uses the partial unique index uq_web_document_source_uri (V2): at most one row. */
+    public List<Document> findWebBySourceUri(String sourceUri) {
+        String sql = """
+                SELECT id, title, source_type, source_uri,
+                       created_at, updated_at
+                FROM documents
+                WHERE source_type = 'WEB'
+                  AND source_uri = ?
+                """;
+
+        return jdbcTemplate.query(sql, documentRowMapper, sourceUri);
+    }
+
     public Document findById(Long id) {
         String sql = """
                 SELECT id, title, source_type, source_uri,

@@ -53,6 +53,16 @@ public class DocumentService {
         return documentRepository.findAll();
     }
 
+    public List<Document> findWebBySourceUri(String sourceUri) {
+        if (sourceUri == null || sourceUri.isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "sourceUri must not be blank"
+            );
+        }
+        return documentRepository.findWebBySourceUri(sourceUri);
+    }
+
     public Document findById(Long id) {
         try {
             return documentRepository.findById(id);

@@ -46,8 +46,12 @@ public class DocumentServiceClient {
      * service's upsert endpoint.
      */
     public DocumentResponse findDocumentBySourceUri(String sourceUri) {
+        // Indexed single-source lookup (document-service GET /api/documents/web).
         List<DocumentResponse> documents = restClient.get()
-                .uri("/api/documents")
+                .uri(uriBuilder -> uriBuilder
+                        .path("/api/documents/web")
+                        .queryParam("sourceUri", "{sourceUri}")
+                        .build(sourceUri))
                 .retrieve()
                 .body(new ParameterizedTypeReference<
                         List<DocumentResponse>
