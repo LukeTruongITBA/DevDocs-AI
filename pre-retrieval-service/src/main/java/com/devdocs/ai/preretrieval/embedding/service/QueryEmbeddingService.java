@@ -4,6 +4,7 @@ package com.devdocs.ai.preretrieval.embedding.service;
 import com.devdocs.ai.preretrieval.embedding.config.EmbeddingProperties;
 import com.devdocs.ai.preretrieval.embedding.dto.GeminiEmbeddingApiRequest;
 import com.devdocs.ai.preretrieval.embedding.dto.GeminiEmbeddingApiResponse;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.http.MediaType;
@@ -22,6 +23,7 @@ public class QueryEmbeddingService {
     private final EmbeddingProperties properties;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    @Autowired
     public QueryEmbeddingService(
             RestClient.Builder restClientBuilder,
             EmbeddingProperties properties

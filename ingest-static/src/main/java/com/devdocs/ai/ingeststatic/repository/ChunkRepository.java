@@ -47,12 +47,39 @@ public class ChunkRepository {
             VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS vector))
             """;
 
+    /** V4: Ollama vectors go to embedding_ollama with model provenance. */
+    private static final String INSERT_CHUNK_WITH_OLLAMA_EMBEDDING = """
+            INSERT INTO chunks (
+                version_id,
+                chunk_index,
+                content,
+                page_number,
+                checksum,
+                metadata,
+                embedding_ollama,
+                embedding_ollama_model,
+                embedding_ollama_created_at
+            )
+            VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS vector), ?, NOW())
+            """;
+
     private static final String UPDATE_MISSING_EMBEDDING = """
             UPDATE chunks
             SET embedding = CAST(? AS vector)
             WHERE version_id = ?
               AND chunk_index = ?
               AND embedding IS NULL
+            """;
+
+    /** Fills only a missing Ollama vector; content and Gemini data are untouched. */
+    private static final String UPDATE_MISSING_OLLAMA_EMBEDDING = """
+            UPDATE chunks
+            SET embedding_ollama = CAST(? AS vector),
+                embedding_ollama_model = ?,
+                embedding_ollama_created_at = NOW()
+            WHERE version_id = ?
+              AND chunk_index = ?
+              AND embedding_ollama IS NULL
             """;
 
     private static final String COUNT_BY_VERSION = """
@@ -71,9 +98,21 @@ public class ChunkRepository {
             ORDER BY chunk_index
             """;
 
+    private static final String FIND_BY_VERSION_OLLAMA = """
+            SELECT
+                chunk_index,
+                checksum,
+                embedding_ollama IS NULL AS embedding_missing
+            FROM chunks
+            WHERE version_id = ?
+            ORDER BY chunk_index
+            """;
+
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final int embeddingDimensions;
+    private final boolean ollama;
+    private final String embeddingModel;
 
     public ChunkRepository(
             JdbcTemplate jdbcTemplate,
@@ -83,6 +122,8 @@ public class ChunkRepository {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.embeddingDimensions = embeddingProperties.dimensions();
+        this.ollama = embeddingProperties.isOllama();
+        this.embeddingModel = embeddingProperties.model();
     }
 
     public int insertAll(
@@ -167,7 +208,8 @@ public class ChunkRepository {
                 .toList();
 
         jdbcTemplate.batchUpdate(
-                INSERT_CHUNK_WITH_EMBEDDING,
+                ollama ? INSERT_CHUNK_WITH_OLLAMA_EMBEDDING
+                        : INSERT_CHUNK_WITH_EMBEDDING,
                 insertData,
                 insertData.size(),
                 (statement, data) -> {
@@ -180,6 +222,9 @@ public class ChunkRepository {
                     statement.setString(5, chunk.checksum());
                     statement.setString(6, data.metadataJson());
                     statement.setString(7, data.vectorLiteral());
+                    if (ollama) {
+                        statement.setString(8, embeddingModel);
+                    }
                 }
         );
 
@@ -202,13 +247,18 @@ public class ChunkRepository {
                 .toList();
 
         int[][] results = jdbcTemplate.batchUpdate(
-                UPDATE_MISSING_EMBEDDING,
+                ollama ? UPDATE_MISSING_OLLAMA_EMBEDDING
+                        : UPDATE_MISSING_EMBEDDING,
                 updateData,
                 updateData.size(),
                 (statement, data) -> {
-                    statement.setString(1, data.vectorLiteral());
-                    statement.setLong(2, versionId);
-                    statement.setInt(3, data.embedding().chunkIndex());
+                    int parameter = 1;
+                    statement.setString(parameter++, data.vectorLiteral());
+                    if (ollama) {
+                        statement.setString(parameter++, embeddingModel);
+                    }
+                    statement.setLong(parameter++, versionId);
+                    statement.setInt(parameter, data.embedding().chunkIndex());
                 }
         );
 
@@ -237,7 +287,7 @@ public class ChunkRepository {
 
     public List<StoredChunkInfo> findByVersionId(Long versionId) {
         return jdbcTemplate.query(
-                FIND_BY_VERSION,
+                ollama ? FIND_BY_VERSION_OLLAMA : FIND_BY_VERSION,
                 (resultSet, rowNumber) -> new StoredChunkInfo(
                         resultSet.getInt("chunk_index"),
                         resultSet.getString("checksum"),

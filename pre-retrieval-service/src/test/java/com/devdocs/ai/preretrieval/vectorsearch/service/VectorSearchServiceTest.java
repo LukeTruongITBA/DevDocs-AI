@@ -44,21 +44,30 @@ class VectorSearchServiceTest {
     }
 
     @Test
-    void shouldRejectOllamaVectorBeforeLegacySqlPath() {
+    void shouldAcceptOllamaVectorAfterV4Migration() {
         List<Double> embedding = new ArrayList<>();
         for (int i = 0; i < 768; i++) {
             embedding.add(0.1);
         }
         VectorSearchRequest request = new VectorSearchRequest(5L, embedding, 5);
 
-        IllegalArgumentException exception = assertThrows(
+        when(vectorSearchRepository.search(5L, embedding, 5)).thenReturn(List.of());
+
+        assertEquals(List.of(), vectorSearchService.search(request));
+        verify(vectorSearchRepository).search(5L, embedding, 5);
+    }
+
+    @Test
+    void shouldRejectUnsupportedDimensionCount() {
+        List<Double> embedding = new ArrayList<>();
+        for (int i = 0; i < 1024; i++) {
+            embedding.add(0.1);
+        }
+        VectorSearchRequest request = new VectorSearchRequest(5L, embedding, 5);
+
+        assertThrows(
                 IllegalArgumentException.class,
                 () -> vectorSearchService.search(request)
-        );
-
-        assertEquals(
-                "Ollama retrieval is disabled until chunks.embedding_ollama VECTOR(768) is migrated.",
-                exception.getMessage()
         );
         verifyNoInteractions(vectorSearchRepository);
     }

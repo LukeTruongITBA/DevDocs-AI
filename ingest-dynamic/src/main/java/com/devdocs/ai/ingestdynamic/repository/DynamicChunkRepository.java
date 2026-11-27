@@ -37,9 +37,60 @@ public class DynamicChunkRepository {
             VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS vector))
             """;
 
+    /** V4: Ollama vectors go to embedding_ollama with model provenance. */
+    private static final String INSERT_OLLAMA_SQL = """
+            INSERT INTO chunks (
+                version_id,
+                chunk_index,
+                content,
+                page_number,
+                checksum,
+                metadata,
+                embedding_ollama,
+                embedding_ollama_model,
+                embedding_ollama_created_at
+            )
+            VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS vector), ?, NOW())
+            """;
+
+    private static final String FINGERPRINT_SQL = """
+            SELECT chunk_index, checksum, embedding IS NOT NULL AS has_embedding
+            FROM chunks
+            WHERE version_id = ?
+            ORDER BY chunk_index
+            """;
+
+    private static final String FINGERPRINT_OLLAMA_SQL = """
+            SELECT chunk_index, checksum, embedding_ollama IS NOT NULL AS has_embedding
+            FROM chunks
+            WHERE version_id = ?
+            ORDER BY chunk_index
+            """;
+
+    /** Fills only a missing Ollama vector; content and Gemini data are untouched. */
+    private static final String FILL_MISSING_OLLAMA_SQL = """
+            UPDATE chunks
+            SET embedding_ollama = CAST(? AS vector),
+                embedding_ollama_model = ?,
+                embedding_ollama_created_at = NOW()
+            WHERE version_id = ?
+              AND chunk_index = ?
+              AND embedding_ollama IS NULL
+            """;
+
+    private static final String FILL_MISSING_GEMINI_SQL = """
+            UPDATE chunks
+            SET embedding = CAST(? AS vector)
+            WHERE version_id = ?
+              AND chunk_index = ?
+              AND embedding IS NULL
+            """;
+
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final int embeddingDimensions;
+    private final boolean ollama;
+    private final String embeddingModel;
 
     public DynamicChunkRepository(
             JdbcTemplate jdbcTemplate,
@@ -49,6 +100,8 @@ public class DynamicChunkRepository {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.embeddingDimensions = embeddingProperties.dimensions();
+        this.ollama = embeddingProperties.isOllama();
+        this.embeddingModel = embeddingProperties.model();
     }
 
     /**
@@ -68,7 +121,7 @@ public class DynamicChunkRepository {
         validateInput(documentId, versionId, chunks, embeddings);
 
         jdbcTemplate.batchUpdate(
-                INSERT_SQL,
+                ollama ? INSERT_OLLAMA_SQL : INSERT_SQL,
                 new BatchPreparedStatementSetter() {
 
                     @Override
@@ -104,6 +157,9 @@ public class DynamicChunkRepository {
                                 7,
                                 toVectorLiteral(embedding)
                         );
+                        if (ollama) {
+                            statement.setString(8, embeddingModel);
+                        }
                     }
 
                     @Override
@@ -123,15 +179,110 @@ public class DynamicChunkRepository {
             Long versionId,
             List<TextChunk> expectedChunks
     ) {
+        return compareStoredChunks(versionId, expectedChunks)
+                == StoredChunkState.COMPLETE;
+    }
+
+    /**
+     * Compares stored chunk content with the expected snapshot and reports
+     * whether the configured provider's embedding column is fully populated.
+     * Content mismatches are never repairable here.
+     */
+    public StoredChunkState compareStoredChunks(
+            Long versionId,
+            List<TextChunk> expectedChunks
+    ) {
         if (versionId == null || versionId <= 0
                 || expectedChunks == null || expectedChunks.isEmpty()) {
-            return false;
+            return StoredChunkState.MISMATCH;
         }
 
-        List<StoredChunkFingerprint> stored = jdbcTemplate.query(
-                "SELECT chunk_index, checksum, embedding IS NOT NULL "
-                        + "AS has_embedding FROM chunks "
-                        + "WHERE version_id = ? ORDER BY chunk_index",
+        List<StoredChunkFingerprint> stored = loadFingerprints(versionId);
+
+        if (stored.size() != expectedChunks.size()) {
+            return StoredChunkState.MISMATCH;
+        }
+
+        boolean allEmbedded = true;
+        for (int index = 0; index < expectedChunks.size(); index++) {
+            StoredChunkFingerprint fingerprint = stored.get(index);
+            String expectedChecksum = ChecksumUtils.sha256(
+                    expectedChunks.get(index).content()
+            );
+            if (fingerprint.chunkIndex() != index
+                    || !expectedChecksum.equalsIgnoreCase(
+                            fingerprint.checksum()
+                    )) {
+                return StoredChunkState.MISMATCH;
+            }
+            allEmbedded &= fingerprint.hasEmbedding();
+        }
+
+        return allEmbedded
+                ? StoredChunkState.COMPLETE
+                : StoredChunkState.CONTENT_MATCHES_EMBEDDINGS_MISSING;
+    }
+
+    /** Chunk indexes whose configured-provider embedding is still NULL. */
+    public List<Integer> findMissingEmbeddingIndexes(Long versionId) {
+        return loadFingerprints(versionId).stream()
+                .filter(fingerprint -> !fingerprint.hasEmbedding())
+                .map(StoredChunkFingerprint::chunkIndex)
+                .toList();
+    }
+
+    /**
+     * Fills NULL embeddings for already-stored chunks of the configured
+     * provider. Only rows whose embedding is still NULL are updated, so a
+     * concurrent fill or an existing vector is never overwritten.
+     *
+     * @return number of rows updated
+     */
+    @Transactional
+    public int fillMissingEmbeddings(
+            Long versionId,
+            List<Integer> chunkIndexes,
+            List<float[]> embeddings
+    ) {
+        if (versionId == null || versionId <= 0
+                || chunkIndexes == null || chunkIndexes.isEmpty()
+                || embeddings == null
+                || embeddings.size() != chunkIndexes.size()) {
+            throw new IllegalArgumentException(
+                    "Chunk indexes and embeddings must have the same non-zero size."
+            );
+        }
+
+        for (float[] embedding : embeddings) {
+            if (embedding == null || embedding.length != embeddingDimensions) {
+                throw new IllegalArgumentException(
+                        "Embedding dimensions do not match configuration."
+                );
+            }
+            for (float value : embedding) {
+                if (!Float.isFinite(value)) {
+                    throw new IllegalArgumentException(
+                            "Embedding values must be finite."
+                    );
+                }
+            }
+        }
+
+        int updated = 0;
+        for (int i = 0; i < chunkIndexes.size(); i++) {
+            String vector = toVectorLiteral(embeddings.get(i));
+            updated += ollama
+                    ? jdbcTemplate.update(FILL_MISSING_OLLAMA_SQL,
+                            vector, embeddingModel, versionId, chunkIndexes.get(i))
+                    : jdbcTemplate.update(FILL_MISSING_GEMINI_SQL,
+                            vector, versionId, chunkIndexes.get(i));
+        }
+        return updated;
+    }
+
+    private List<StoredChunkFingerprint> loadFingerprints(Long versionId) {
+        return jdbcTemplate.query(
+                ollama ? FINGERPRINT_OLLAMA_SQL : FINGERPRINT_SQL,
                 (resultSet, rowNum) -> new StoredChunkFingerprint(
                         resultSet.getInt("chunk_index"),
                         resultSet.getString("checksum"),
@@ -139,26 +290,12 @@ public class DynamicChunkRepository {
                 ),
                 versionId
         );
+    }
 
-        if (stored.size() != expectedChunks.size()) {
-            return false;
-        }
-
-        for (int index = 0; index < expectedChunks.size(); index++) {
-            StoredChunkFingerprint fingerprint = stored.get(index);
-            String expectedChecksum = ChecksumUtils.sha256(
-                    expectedChunks.get(index).content()
-            );
-            if (fingerprint.chunkIndex() != index
-                    || !fingerprint.hasEmbedding()
-                    || !expectedChecksum.equalsIgnoreCase(
-                            fingerprint.checksum()
-                    )) {
-                return false;
-            }
-        }
-
-        return true;
+    public enum StoredChunkState {
+        COMPLETE,
+        CONTENT_MATCHES_EMBEDDINGS_MISSING,
+        MISMATCH
     }
 
     private record StoredChunkFingerprint(

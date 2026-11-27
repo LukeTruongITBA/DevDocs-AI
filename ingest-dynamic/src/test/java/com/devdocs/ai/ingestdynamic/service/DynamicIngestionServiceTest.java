@@ -124,9 +124,9 @@ class DynamicIngestionServiceTest {
                 .thenReturn(List.of(existingVersion));
         when(textChunker.chunk(crawledPage))
                 .thenReturn(List.of(textChunk));
-        when(chunkRepository.hasMatchingChunks(
+        when(chunkRepository.compareStoredChunks(
                 20L, List.of(textChunk)
-        )).thenReturn(true);
+        )).thenReturn(DynamicChunkRepository.StoredChunkState.COMPLETE);
 
         DynamicIngestionService.IngestionResult result =
                 ingestionService.ingest(WEBSITE_URL, VERSION);
@@ -143,6 +143,42 @@ class DynamicIngestionServiceTest {
 
         verify(documentServiceClient, never())
                 .createVersion(anyLong(), any());
+    }
+
+    @Test
+    void shouldFillOnlyMissingProviderEmbeddingsForUnchangedContent()
+            throws Exception {
+
+        when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
+                .thenReturn(completeCrawlResult());
+        when(documentServiceClient.findDocumentBySourceUri(WEBSITE_URL))
+                .thenReturn(document);
+        DocumentVersionResponse existingVersion = new DocumentVersionResponse(
+                20L, 10L, VERSION, calculateChecksum(), true, null, null);
+        when(documentServiceClient.findVersions(10L))
+                .thenReturn(List.of(existingVersion));
+        when(textChunker.chunk(crawledPage)).thenReturn(List.of(textChunk));
+        when(chunkRepository.compareStoredChunks(20L, List.of(textChunk)))
+                .thenReturn(DynamicChunkRepository.StoredChunkState
+                        .CONTENT_MATCHES_EMBEDDINGS_MISSING);
+        when(chunkRepository.findMissingEmbeddingIndexes(20L))
+                .thenReturn(List.of(0));
+        List<float[]> vectors = List.of(new float[]{0.1f});
+        when(embeddingService.embed(List.of(textChunk))).thenReturn(vectors);
+        when(chunkRepository.fillMissingEmbeddings(20L, List.of(0), vectors))
+                .thenReturn(1);
+
+        DynamicIngestionService.IngestionResult result =
+                ingestionService.ingest(WEBSITE_URL, VERSION);
+
+        assertFalse(result.skipped());
+        assertEquals(20L, result.versionId());
+        assertEquals(1, result.chunksStored());
+        verify(chunkRepository).fillMissingEmbeddings(20L, List.of(0), vectors);
+        verify(chunkRepository, never())
+                .insertChunks(anyLong(), anyLong(), anyList(), anyList());
+        verify(documentServiceClient, never()).createDocument(any());
+        verify(documentServiceClient, never()).createVersion(anyLong(), any());
     }
 
     @Test

@@ -216,6 +216,80 @@ class DynamicChunkRepositoryTest {
         stubStoredChunk(0, ChecksumUtils.sha256(chunk.content()), false);
 
         assertFalse(repository.hasMatchingChunks(2L, List.of(chunk)));
+        assertEquals(
+                DynamicChunkRepository.StoredChunkState
+                        .CONTENT_MATCHES_EMBEDDINGS_MISSING,
+                repository.compareStoredChunks(2L, List.of(chunk))
+        );
+    }
+
+    @Test
+    void shouldReportMismatchWhenContentDiffersEvenIfEmbeddingMissing()
+            throws Exception {
+        TextChunk chunk = new TextChunk(
+                0, "Expected content", "https://docs.example.com",
+                "Docs", "1"
+        );
+        stubStoredChunk(0, "0".repeat(64), false);
+
+        assertEquals(
+                DynamicChunkRepository.StoredChunkState.MISMATCH,
+                repository.compareStoredChunks(2L, List.of(chunk))
+        );
+    }
+
+    @Test
+    void ollamaProviderWritesEmbeddingOllamaColumnWithModelProvenance()
+            throws Exception {
+        DynamicChunkRepository ollamaRepository = new DynamicChunkRepository(
+                jdbcTemplate, objectMapper,
+                new EmbeddingProperties("http://localhost:11434/api/embed", "",
+                        "nomic-embed-text:137m-v1.5-fp16", 768, 10, "ollama"));
+        TextChunk chunk = new TextChunk(
+                0, "Ollama content", "https://docs.example.com", "Docs", "1",
+                Instant.parse("2026-11-26T10:15:30Z"));
+        when(objectMapper.writeValueAsString(anyMap())).thenReturn("{}");
+
+        ollamaRepository.insertChunks(1L, 2L, List.of(chunk),
+                List.of(new float[768]));
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<BatchPreparedStatementSetter> setter =
+                ArgumentCaptor.forClass(BatchPreparedStatementSetter.class);
+        verify(jdbcTemplate).batchUpdate(sql.capture(), setter.capture());
+        assertTrue(sql.getValue().contains("embedding_ollama,"));
+        assertTrue(sql.getValue().contains("embedding_ollama_model"));
+        assertFalse(sql.getValue().matches("(?s).*\\bembedding\\s*\\).*"));
+
+        PreparedStatement statement = mock(PreparedStatement.class);
+        setter.getValue().setValues(statement, 0);
+        verify(statement).setString(8, "nomic-embed-text:137m-v1.5-fp16");
+    }
+
+    @Test
+    void ollamaFillUpdatesOnlyNullOllamaVectors() {
+        DynamicChunkRepository ollamaRepository = new DynamicChunkRepository(
+                jdbcTemplate, objectMapper,
+                new EmbeddingProperties("http://localhost:11434/api/embed", "",
+                        "nomic-embed-text:137m-v1.5-fp16", 768, 10, "ollama"));
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(1);
+
+        int updated = ollamaRepository.fillMissingEmbeddings(
+                2L, List.of(3), List.of(new float[768]));
+
+        assertEquals(1, updated);
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).update(sql.capture(), any(Object[].class));
+        assertTrue(sql.getValue().contains("embedding_ollama IS NULL"));
+        assertFalse(sql.getValue().contains("SET embedding ="));
+    }
+
+    @Test
+    void fillRejectsWrongDimensionVectors() {
+        assertThrows(IllegalArgumentException.class,
+                () -> repository.fillMissingEmbeddings(
+                        2L, List.of(0), List.of(new float[768])));
+        verifyNoInteractions(jdbcTemplate);
     }
 
     private void stubStoredChunk(

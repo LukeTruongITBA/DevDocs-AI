@@ -4,6 +4,7 @@ import com.devdocs.ai.ingestdynamic.config.EmbeddingProperties;
 import com.devdocs.ai.ingestdynamic.dto.TextChunk;
 import org.springframework.http.MediaType;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -28,6 +29,7 @@ public class OllamaEmbeddingService implements EmbeddingService {
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public OllamaEmbeddingService(
             EmbeddingProperties properties,
             RestClient.Builder restClientBuilder
@@ -76,13 +78,6 @@ public class OllamaEmbeddingService implements EmbeddingService {
             result.addAll(embedBatch(chunks.subList(start, end)));
         }
         return List.copyOf(result);
-    }
-
-    @Override
-    public boolean persistenceReady() {
-        // The existing chunks.embedding column is VECTOR(1536). Prompt 12
-        // will add the independent VECTOR(768) column before enabling writes.
-        return false;
     }
 
     @Override

@@ -8,10 +8,6 @@ import java.util.List;
 public interface EmbeddingService {
     List<float[]> embed(List<TextChunk> chunks);
 
-    default boolean persistenceReady() {
-        return true;
-    }
-
     default boolean isOllama() {
         return false;
     }

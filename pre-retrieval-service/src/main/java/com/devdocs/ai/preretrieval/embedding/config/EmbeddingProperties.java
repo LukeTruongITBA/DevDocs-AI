@@ -2,6 +2,7 @@
 package com.devdocs.ai.preretrieval.embedding.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 @ConfigurationProperties(prefix = "app.embedding")
 public record EmbeddingProperties(
@@ -15,6 +16,7 @@ public record EmbeddingProperties(
         long readTimeoutMillis
 ) {
 
+        @ConstructorBinding
         public EmbeddingProperties {
                 if (apiUrl == null || apiUrl.isBlank()) {
                         throw new IllegalArgumentException("Embedding API URL must not be blank");

@@ -5,6 +5,7 @@ import com.devdocs.ai.ingeststatic.chunk.TextChunk;
 import com.devdocs.ai.ingeststatic.config.EmbeddingProperties;
 import com.devdocs.ai.ingeststatic.dto.GeminiEmbeddingApiRequest;
 import com.devdocs.ai.ingeststatic.dto.GeminiEmbeddingApiResponse;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.http.MediaType;
@@ -24,6 +25,7 @@ public class EmbeddingService {
     private final EmbeddingProperties properties;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    @Autowired
     public EmbeddingService(
             RestClient.Builder restClientBuilder,
             EmbeddingProperties properties
@@ -150,11 +152,6 @@ public class EmbeddingService {
         }
 
         return List.copyOf(embeddings);
-    }
-
-    /** Existing PostgreSQL embedding column is VECTOR(1536); Prompt 12 enables Ollama writes. */
-    public boolean persistenceReady() {
-        return !properties.isOllama();
     }
 
     private List<ChunkEmbedding> embedWithOllama(List<TextChunk> chunks) {

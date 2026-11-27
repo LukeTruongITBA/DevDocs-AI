@@ -220,11 +220,14 @@ public class DynamicIngestionService {
                 .findFirst()
                 .orElse(null);
 
-        if (existingVersion != null
-                && checksum.equalsIgnoreCase(existingVersion.checksum())
-                && chunkRepository.hasMatchingChunks(
-                        existingVersion.id(), chunks
-                )) {
+        DynamicChunkRepository.StoredChunkState storedState =
+                existingVersion != null
+                        && checksum.equalsIgnoreCase(existingVersion.checksum())
+                        ? chunkRepository.compareStoredChunks(
+                                existingVersion.id(), chunks)
+                        : DynamicChunkRepository.StoredChunkState.MISMATCH;
+
+        if (storedState == DynamicChunkRepository.StoredChunkState.COMPLETE) {
 
             log.info("Skipped unchanged web ingestion: documentId={}, versionId={}, pages={}",
                     documentId, existingVersion.id(), pages.size());
@@ -237,6 +240,36 @@ public class DynamicIngestionService {
                     pages.size(),
                     0,
                     true,
+                    crawlResult.failures()
+            );
+        }
+
+        if (storedState == DynamicChunkRepository.StoredChunkState
+                .CONTENT_MATCHES_EMBEDDINGS_MISSING) {
+            // Same version, same snapshot checksum, same chunk content: only
+            // the configured provider's vectors are missing (e.g. a chunk
+            // first stored with Gemini, now served by Ollama). Fill those
+            // NULL vectors; content, metadata and other columns stay as-is.
+            List<Integer> missing = chunkRepository
+                    .findMissingEmbeddingIndexes(existingVersion.id());
+            List<TextChunk> toEmbed = missing.stream()
+                    .map(chunks::get)
+                    .toList();
+            int filled = toEmbed.isEmpty() ? 0 : chunkRepository.fillMissingEmbeddings(
+                    existingVersion.id(), missing, embeddingService.embed(toEmbed));
+
+            log.info("Filled missing embeddings for unchanged web source: "
+                            + "documentId={}, versionId={}, filledChunks={}",
+                    documentId, existingVersion.id(), filled);
+
+            return new IngestionResult(
+                    documentId,
+                    existingVersion.id(),
+                    versionLabel,
+                    checksum,
+                    pages.size(),
+                    filled,
+                    false,
                     crawlResult.failures()
             );
         }
@@ -260,13 +293,6 @@ public class DynamicIngestionService {
         // 8. Generate embeddings before creating any new database records.
         List<float[]> embeddings =
                 embeddingService.embed(chunks);
-
-        if (embeddingService.isOllama() && !embeddingService.persistenceReady()) {
-            throw new IllegalStateException(
-                    "Ollama embeddings require the pending VECTOR(768) dual-column migration; "
-                            + "no chunks were persisted."
-            );
-        }
 
         // 9. Create a new WEB document only after extraction and embedding
         // have succeeded. A concurrent source collision fails safely at the

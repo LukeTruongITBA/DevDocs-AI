@@ -16,7 +16,8 @@ import java.util.stream.Collectors;
 @Repository
 public class VectorSearchRepository {
 
-    private static final String SEARCH_SQL = """
+    /** {@code %1$s} is replaced only by an {@link EmbeddingColumn} constant. */
+    private static final String SEARCH_SQL_TEMPLATE = """
         WITH query_vector AS (
             SELECT CAST(? AS vector) AS embedding
         )
@@ -31,7 +32,7 @@ public class VectorSearchRepository {
             c.content,
             c.page_number,
             c.metadata::text AS metadata,
-            1 - (c.embedding <=> q.embedding) AS similarity
+            1 - (c.%1$s <=> q.embedding) AS similarity
         FROM chunks c
         JOIN document_versions dv
             ON dv.id = c.version_id
@@ -39,10 +40,17 @@ public class VectorSearchRepository {
             ON d.id = dv.document_id
         CROSS JOIN query_vector q
         WHERE c.version_id = ?
-          AND c.embedding IS NOT NULL
-        ORDER BY c.embedding <=> q.embedding
+          AND c.%1$s IS NOT NULL
+        ORDER BY c.%1$s <=> q.embedding
         LIMIT ?
         """;
+
+    private static final java.util.Map<EmbeddingColumn, String> SEARCH_SQL =
+            java.util.Arrays.stream(EmbeddingColumn.values())
+                    .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                            column -> column,
+                            column -> SEARCH_SQL_TEMPLATE.formatted(column.columnName())
+                    ));
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -60,12 +68,16 @@ public class VectorSearchRepository {
             List<Double> embedding,
             Integer topK
     ) {
+        EmbeddingColumn column = EmbeddingColumn.forDimensions(embedding.size())
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No embedding column stores " + embedding.size() + " dimensions"));
+
         String vectorValue = embedding.stream()
                 .map(String::valueOf)
                 .collect(Collectors.joining(",", "[", "]"));
 
         return jdbcTemplate.query(
-                SEARCH_SQL,
+                SEARCH_SQL.get(column),
                 (rs, rowNum) -> {
                     Map<String, Object> metadata;
 
