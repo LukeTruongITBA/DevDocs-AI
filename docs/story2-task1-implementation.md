@@ -22,7 +22,7 @@ The default usage bounds are:
 | `INGESTION_MAX_CHUNKS_PER_SOURCE` | 200 | Maximum chunks sent for one source. |
 | Response/file bytes | 5 MiB | Maximum HTML response, repository file, or PDF download. |
 
-The chunk defaults are `CHUNK_SIZE=1000` and `CHUNK_OVERLAP=200`. Embeddings use `models/gemini-embedding-001`, 1536 dimensions, and batches of at most 64 chunks per API request. Three successful sources can therefore cause at most 12 embedding requests under the chunk cap. The hard extracted-character limit bounds these three sources to 300,000 characters total; the chunk cap also limits each source to 200 chunks. Actual billable token counts depend on Gemini tokenization and must be obtained from provider usage records. At the standard rate of $0.15 per million input tokens, 300,000 characters would cost about $0.045 if every character counted as one token; a rough four-characters-per-token estimate is about $0.011. These are estimates, not guaranteed billing bounds; pricing tier and tokenization can change them.
+The chunk defaults are `CHUNK_SIZE=1000` and `CHUNK_OVERLAP=200`. Embeddings now use local Ollama `nomic-embed-text` (768 dimensions, no per-token cost; see the Ollama section at the end). The cost figures in the rest of this paragraph are the original estimates for the legacy Gemini path (`models/gemini-embedding-001`, 1536 dimensions, batches of at most 64 chunks per API request). Three successful sources can therefore cause at most 12 embedding requests under the chunk cap. The hard extracted-character limit bounds these three sources to 300,000 characters total; the chunk cap also limits each source to 200 chunks. Actual billable token counts depend on Gemini tokenization and must be obtained from provider usage records. At the standard rate of $0.15 per million input tokens, 300,000 characters would cost about $0.045 if every character counted as one token; a rough four-characters-per-token estimate is about $0.011. These are estimates, not guaranteed billing bounds; pricing tier and tokenization can change them.
 
 ### Gemini diagnostics and bounded retry policy
 
@@ -73,22 +73,24 @@ Production ingestion was attempted once on 2026-11-26 under explicit approval; o
 5. "The README or docs are updated, and the result is demonstrated to the product owner."
 
 GPT/Codex review is the project's accepted practical review process. Code review and local verification do not constitute GitHub publication or Product Owner acceptance. No Product Owner demonstration or acceptance is claimed here.
-## Evidence-based checklist
+## Evidence-based checklist (status as of 2026-11-27)
+
+The detailed records below are kept as history. The production evidence is in *Production ingestion under Ollama (2026-11-27)* at the end of this file.
 
 ### Professor acceptance criteria
 
-- [ ] **AC1 local implementation and preflight only:** HTML page, direct remote PDF candidate, and pinned GitHub repository documentation each produce pages and chunks in the production-equivalent crawler/chunker path. Production persistence remains approval-gated.
-- [ ] **AC2 local implementation and automated verification only:** navigation, header/footer/aside/form elements, scripts/styles, common cookie/consent selectors, and standalone printed PDF page-number artifacts are removed or skipped; fixtures pass. Production persistence remains unverified.
-- [ ] **AC3 local implementation and automated verification only:** new dynamic chunks retain the six-field Story 1 contract and add `source_url` plus UTC `fetch_date` at the metadata root and page object. Eleven historical web chunks remain without fabricated dates.
-- [ ] **AC4 local implementation and automated verification only:** batch source failures are logged, isolated, and followed by later sources; the fresh suite includes the failure-continuation path. Production batch execution remains approval-gated.
+- [x] **AC1, three source types ingested:** web page (Spring `core.html`), remote PDF (Oracle `firstcup.pdf`, 115 chunks) and third-party repository docs (pinned MkDocs `docs/user-guide`, 123 chunks) are persisted with Ollama vectors.
+- [x] **AC2, boilerplate removed:** navigation, header, footer, aside, forms, scripts/styles, cookie/consent selectors and standalone PDF page numbers are removed (fixtures). Marker searches over the 239 persisted chunks found no cookie, skip-nav or "edit on GitHub" text.
+- [x] **AC3, source URL and fetch date in metadata:** every Story 2 chunk has `source_url` and a UTC `fetch_date` at the root and in `page`. Remote PDFs also keep `pdf_page_number`.
+- [x] **AC4, failed source isolated:** in the live batch the `.invalid` source failed first, was logged at WARN, and the three later sources still succeeded (`succeeded=3, failed=1`).
 
 ### Common Baseline
 
-- [ ] **1. Peer-reviewed and merged to `main`:** changes remain unstaged and uncommitted on `main`.
-- [x] **2. Automated tests:** fresh `ingest-dynamic` run passed with 126/126 tests and the document-service regression suite passed with 15/15; both include success and failure paths.
-- [x] **3. No secrets and documented configuration:** `.env` remains ignored/untracked; configuration is documented in `.env.example` and the README.
-- [x] **4. Errors and key events logged:** crawler, fetcher, batch, persistence, and controller paths emit sanitized success/failure events.
-- [ ] **5. Documentation and Product Owner demonstration:** README and this implementation record are updated locally; GitHub publication and Product Owner acceptance remain pending.
+- [x] **1. Reviewed and merged to `main`:** committed in `9d41e43` and later fixes, and pushed to `origin/main`. An independent review (see [epic1-task1-status.md](epic1-task1-status.md)) found no blockers, and its findings were fixed.
+- [x] **2. Automated tests:** ingest-dynamic 139/139 and document-service 17/17 pass, covering success and failure paths.
+- [x] **3. No secrets; configuration documented:** `.env` is ignored; the configuration is in `.env.example`, the README and this record.
+- [x] **4. Errors and key events logged:** crawler, fetcher, batch, persistence and controller paths emit sanitized events.
+- [ ] **5. Docs updated and demonstrated to the Product Owner:** the docs are updated; the demonstration has not been performed yet.
 
 ## Current read-only production-readiness record
 
@@ -129,68 +131,12 @@ Exact proposed request payload:
 }
 ```
 
-## Full individual TODO checklist
-
-### AC1 — Three source types
-
-1. **Select sources:** complete; the exact Spring, Oracle direct PDF, and pinned MkDocs sources are recorded above.
-2. **End-to-end production ingestion:** pending explicit approval; local crawler/chunker preflight passes.
-3. **Download, processing, chunking, embedding, persistence:** download/processing/chunking locally verified; Gemini and PostgreSQL remain pending.
-4. **Database records:** pending production run and read-only post-run verification.
-5. **Automated success and failure tests:** complete; the fresh 126-test dynamic suite and 15-test document-service suite include both paths.
-6. **GPT/Codex review:** local review complete; publication and external review remain pending.
-
-### AC2 — Boilerplate removal
-
-1. **Before/after cleanup inspection:** complete for Spring preflight and local fixtures.
-2. **Navigation/footer/cookie removal:** complete in implementation and fixtures; Spring had no visible cookie banner.
-3. **Main content preservation:** complete in fixtures and Spring preflight.
-4. **Cleanup failure and no-boilerplate tests:** complete; empty cleanup and content-without-boilerplate paths are covered.
-5. **GPT/Codex review:** complete locally; production representative-chunk review pending.
-
-### AC3 — Metadata
-
-1. **Source URL metadata:** complete in serializer and tests; production verification pending.
-2. **Fetch-date metadata:** complete in serializer and tests; production verification pending.
-3. **Web/PDF/repository metadata:** source-specific structures locally verified; production verification pending.
-4. **Valid/missing/invalid URL/date tests:** URL validation and metadata validation tests pass; production verification pending.
-5. **GPT/Codex review:** complete locally; publication remains pending.
-
-### AC4 — Batch failure isolation
-
-1. **Multi-source batch with a failed source:** complete in automated fixtures; exact production payload prepared.
-2. **Failure logging:** complete locally with sanitized URL logging; production log evidence pending.
-3. **Remaining sources continue:** complete in automated tests; production evidence pending.
-4. **Per-source results:** complete in DTO/controller/service tests; production response pending.
-5. **Production logs:** pending approved run.
-6. **GPT/Codex review:** complete locally; publication remains pending.
-
-### Common Baseline individual items
-
-1. **Code review and findings resolved:** local review complete.
-2. **Code merged/published to `main`:** pending explicit Git approval.
-3. **Success-path test:** complete; fresh suite passes.
-4. **Failure-path test:** complete; fresh suite passes.
-5. **Full relevant suites:** complete; ingest-dynamic 126/126 and document-service 15/15 passed.
-6. **No secrets in repository/history:** local scan found no high-confidence token patterns; publication review still pending.
-7. **Configuration documented:** complete in `.env.example`, application configuration, Compose, README, and this record.
-8. **Errors and key events logged:** complete in local implementation/tests; production evidence pending.
-9. **README/docs updated:** complete locally.
-10. **Product Owner demo prepared:** pending final production evidence package.
-11. **Product Owner demo performed and evidenced:** pending user demonstration.
-
 ## Product Owner demonstration plan
 
-The demonstration remains approval-gated and has not been performed. After
-the two service images are rebuilt and restarted with approval, show the
-health endpoints, submit the exact four-source batch from the payload above,
-and capture the per-source response and sanitized service logs. The expected
-result is one DNS failure followed by successful Spring, Oracle PDF, and
-MkDocs results. Use read-only SQL afterward to show document, version, chunk,
-embedding, metadata, and PDF page-provenance checks. Record the before/after
-counts and retain the response, logs, and SQL output as evidence for AC1-AC4.
-
-**Readiness verdict: READY FOR EXPLICIT PRODUCTION APPROVAL, NOT DONE.** Local blockers are resolved. Production ingestion, Gemini usage, database writes, Docker rebuild/restart, Git publication, and Product Owner demonstration remain outstanding approval or evidence gates.
+1. `docker compose ps`: all services are up and the health endpoints return UP.
+2. Submit the four-source payload above to `POST /api/ingestion/dynamic/batch` and show the per-source response: on a database that already holds the data, the `.invalid` source fails and the other three are skipped (idempotent).
+3. Show the WARN log line for the failed source (`docker logs devdocs-ingest-dynamic`).
+4. Run read-only SQL to show the documents, chunk counts, `source_url`/`fetch_date` metadata and PDF `pdf_page_number` values.
 
 ## Production ingestion under Ollama (2026-11-27)
 

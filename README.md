@@ -27,15 +27,15 @@ The compose file reads `.env` from the project root. Copy `.env.example` to `.en
 |---|---|---|
 | `CHUNK_SIZE` | `1000` | Maximum target chunk size in characters. |
 | `CHUNK_OVERLAP` | `200` | Character overlap between chunks; must be smaller than chunk size. |
-| `GEMINI_API_URL` | Gemini batch embedding endpoint | Embedding API endpoint. |
-| `GEMINI_API_KEY` | unset | Secret API credential; required for real embedding requests. |
-| `EMBEDDING_MODEL` | `models/gemini-embedding-001` | Gemini embedding model. |
-| `EMBEDDING_DIMENSIONS` | `1536` | Must remain 1536 because PostgreSQL uses `VECTOR(1536)`. |
-| `EMBEDDING_BATCH_SIZE` | `64` | Number of chunks per embedding request batch. |
-| `EMBEDDING_MAX_ATTEMPTS` | `1` | Maximum attempts per embedding batch; retries are disabled by default pending provider quota evidence. |
-| `EMBEDDING_INITIAL_BACKOFF_MILLIS` | `250` | Initial bounded retry backoff when retries are explicitly enabled. |
-| `EMBEDDING_MAX_BACKOFF_MILLIS` | `2000` | Maximum retry backoff; the application rejects values above 60 seconds. |
-| `EMBEDDING_JITTER_RATIO` | `0.2` | Bounded random backoff jitter from 0 through 1. |
+| `OLLAMA_EMBEDDING_URL` | `http://host.docker.internal:11434/api/embed` | Ollama embedding endpoint (compose). Outside compose the services default to `http://localhost:11434/api/embed`. |
+| `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text:137m-v1.5-fp16` | Embedding model (768 dimensions, stored in `chunks.embedding_ollama`). |
+| `OLLAMA_EMBEDDING_BATCH_SIZE` | `16` | Chunks per embedding request. |
+| `EMBEDDING_PROVIDER` | `ollama` | `ollama` (768-dim column) or `gemini` (legacy 1536-dim column). Each provider validates its own dimension count. |
+| `EMBEDDING_API_URL`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `GEMINI_API_KEY` | unset | Legacy Gemini path, used only outside compose with `EMBEDDING_PROVIDER=gemini` and 1536 dimensions. `GEMINI_API_KEY` is a secret. |
+| `EMBEDDING_MAX_ATTEMPTS` | `1` | Gemini retry attempts per batch (retries off by default). |
+| `EMBEDDING_INITIAL_BACKOFF_MILLIS` / `EMBEDDING_MAX_BACKOFF_MILLIS` / `EMBEDDING_JITTER_RATIO` | `250` / `2000` / `0.2` | Bounded Gemini retry backoff, used only when retries are enabled. |
+| `RERANKER_URL` | `http://reranker:80` (compose) | Cross-encoder (TEI) endpoint; see [docs/story4-task1-reranker.md](docs/story4-task1-reranker.md). |
+| `RERANKER_CANDIDATE_COUNT` | `20` | Wider top-N retrieved before reranking (max 32). `RERANKER_ENABLED=false` keeps vector order. |
 | `POSTGRES_DB` | `devdocs` | Local database name. |
 | `POSTGRES_USER` | `devdocs` | Local database user. |
 | `POSTGRES_PASSWORD` | unset in example | Set a local database password in `.env`. |
@@ -50,6 +50,8 @@ Embeddings use two independent vector columns. Ollama `nomic-embed-text` (768 di
 | Story 2 Task 1, Internet ingestion (production batch under Ollama) | [docs/story2-task1-implementation.md](docs/story2-task1-implementation.md) |
 | Story 3 Task 1, Safe metadata filtering (with Postman collection) | [docs/story3-task1-metadata-filtering.md](docs/story3-task1-metadata-filtering.md) |
 | Story 4 Task 1, Cross-encoder reranker (golden-set benchmark) | [docs/story4-task1-reranker.md](docs/story4-task1-reranker.md) |
+
+The per-task acceptance and baseline checklist, review record and known deviations are in [docs/epic1-task1-status.md](docs/epic1-task1-status.md).
 
 Running the full stack also starts the `reranker` service: the TEI CPU image plus a pinned cross-encoder, downloaded on first start, which uses about 3.6 GB RAM. Ollama must be running on the host with `nomic-embed-text:137m-v1.5-fp16` pulled.
 
