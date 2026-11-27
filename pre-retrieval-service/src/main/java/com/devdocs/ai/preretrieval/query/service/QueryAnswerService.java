@@ -34,9 +34,17 @@ public class QueryAnswerService {
     }
 
     public QueryAnswerResponse answer(QueryPipelineRequest request) {
+        return answer(request, null);
+    }
 
-        QueryPipelineResponse retrieval =
-                queryPipelineService.retrieve(request);
+    public QueryAnswerResponse answer(
+            QueryPipelineRequest request,
+            com.devdocs.ai.preretrieval.filter.MetadataFilter filter
+    ) {
+
+        QueryPipelineResponse retrieval = filter == null
+                ? queryPipelineService.retrieve(request)
+                : queryPipelineService.retrieve(request, filter);
 
         List<StitchedContext> contexts = retrieval.stitchedContexts();
 

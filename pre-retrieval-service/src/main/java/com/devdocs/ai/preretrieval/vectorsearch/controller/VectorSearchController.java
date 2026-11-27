@@ -1,5 +1,7 @@
 package com.devdocs.ai.preretrieval.vectorsearch.controller;
 
+import com.devdocs.ai.preretrieval.filter.MetadataFilter;
+import com.devdocs.ai.preretrieval.filter.MetadataFilterParser;
 import com.devdocs.ai.preretrieval.vectorsearch.dto.VectorSearchRequest;
 import com.devdocs.ai.preretrieval.vectorsearch.dto.VectorSearchResult;
 import com.devdocs.ai.preretrieval.vectorsearch.service.VectorSearchService;
@@ -9,6 +11,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -26,12 +29,20 @@ public class VectorSearchController {
         this.vectorSearchService = vectorSearchService;
     }
 
+    /**
+     * The filter is taken only from URL parameters; any {@code filter} in the
+     * JSON body is discarded so unvalidated input cannot reach the query.
+     */
     @PostMapping("/search")
     public ResponseEntity<List<VectorSearchResult>> search(
-            @RequestBody VectorSearchRequest request
+            @RequestBody VectorSearchRequest request,
+            @RequestParam(value = "filter", required = false) List<String> filters,
+            @RequestParam(value = "filterMode", required = false) String filterMode
     ) {
+        MetadataFilter filter = MetadataFilterParser.parse(filters, filterMode);
         return ResponseEntity.ok(
-                vectorSearchService.search(request)
+                vectorSearchService.search(
+                        request == null ? null : request.withFilter(filter))
         );
     }
 

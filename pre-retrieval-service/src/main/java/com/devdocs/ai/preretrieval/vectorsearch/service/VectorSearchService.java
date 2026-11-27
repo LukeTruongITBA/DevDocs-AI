@@ -4,6 +4,8 @@ import com.devdocs.ai.preretrieval.vectorsearch.dto.VectorSearchRequest;
 import com.devdocs.ai.preretrieval.vectorsearch.dto.VectorSearchResult;
 import com.devdocs.ai.preretrieval.vectorsearch.repository.EmbeddingColumn;
 import com.devdocs.ai.preretrieval.vectorsearch.repository.VectorSearchRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -11,6 +13,7 @@ import java.util.List;
 @Service
 public class VectorSearchService {
 
+    private static final Logger log = LoggerFactory.getLogger(VectorSearchService.class);
     private static final int MAX_TOP_K = 100;
 
     private final VectorSearchRepository vectorSearchRepository;
@@ -24,11 +27,25 @@ public class VectorSearchService {
     public List<VectorSearchResult> search(VectorSearchRequest request) {
         validateRequest(request);
 
-        return vectorSearchRepository.search(
+        if (request.filter() == null) {
+            // Standard flow: unchanged version-scoped search.
+            return vectorSearchRepository.search(
+                    request.versionId(),
+                    request.embedding(),
+                    request.topK()
+            );
+        }
+
+        List<VectorSearchResult> results = vectorSearchRepository.search(
                 request.versionId(),
                 request.embedding(),
-                request.topK()
+                request.topK(),
+                request.filter()
         );
+        log.info("Filtered vector search: mode={}, conditions={}, versionId={}, topK={}, results={}",
+                request.filter().mode(), request.filter().describe(),
+                request.versionId(), request.topK(), results.size());
+        return results;
     }
 
     private void validateRequest(VectorSearchRequest request) {
@@ -38,7 +55,11 @@ public class VectorSearchService {
             );
         }
 
-        if (request.versionId() == null || request.versionId() <= 0) {
+        // versionId scopes the standard flow. With a metadata filter it is
+        // optional (the filter scopes the search); if given it must be valid.
+        if (request.filter() == null
+                ? request.versionId() == null || request.versionId() <= 0
+                : request.versionId() != null && request.versionId() <= 0) {
             throw new IllegalArgumentException(
                     "versionId must be greater than zero"
             );

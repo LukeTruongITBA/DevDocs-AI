@@ -1,6 +1,8 @@
 
 package com.devdocs.ai.preretrieval.query.controller;
 
+import com.devdocs.ai.preretrieval.filter.MetadataFilter;
+import com.devdocs.ai.preretrieval.filter.MetadataFilterParser;
 import com.devdocs.ai.preretrieval.query.dto.QueryAnswerResponse;
 import com.devdocs.ai.preretrieval.query.dto.QueryPipelineRequest;
 import com.devdocs.ai.preretrieval.query.dto.QueryPipelineResponse;
@@ -10,6 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -27,21 +30,35 @@ public class QueryPipelineController {
         this.queryAnswerService = queryAnswerService;
     }
 
+    /**
+     * Optional URL metadata filters: repeated {@code filter=field:op:value}
+     * and {@code filterMode=AND|OR}. Without them the standard flow runs.
+     */
     @PostMapping("/retrieve")
     public ResponseEntity<QueryPipelineResponse> retrieve(
-            @RequestBody QueryPipelineRequest request
+            @RequestBody QueryPipelineRequest request,
+            @RequestParam(value = "filter", required = false) List<String> filters,
+            @RequestParam(value = "filterMode", required = false) String filterMode
     ) {
+        MetadataFilter filter = MetadataFilterParser.parse(filters, filterMode);
         return ResponseEntity.ok(
-                queryPipelineService.retrieve(request)
+                filter == null
+                        ? queryPipelineService.retrieve(request)
+                        : queryPipelineService.retrieve(request, filter)
         );
     }
 
     @PostMapping("/answer")
     public ResponseEntity<QueryAnswerResponse> answer(
-            @RequestBody QueryPipelineRequest request
+            @RequestBody QueryPipelineRequest request,
+            @RequestParam(value = "filter", required = false) List<String> filters,
+            @RequestParam(value = "filterMode", required = false) String filterMode
     ) {
+        MetadataFilter filter = MetadataFilterParser.parse(filters, filterMode);
         return ResponseEntity.ok(
-                queryAnswerService.answer(request)
+                filter == null
+                        ? queryAnswerService.answer(request)
+                        : queryAnswerService.answer(request, filter)
         );
     }
 

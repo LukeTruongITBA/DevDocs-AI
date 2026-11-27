@@ -4,6 +4,7 @@ package com.devdocs.ai.preretrieval.query.service;
 import com.devdocs.ai.preretrieval.contextstitching.dto.StitchedContext;
 import com.devdocs.ai.preretrieval.contextstitching.service.ContextStitchingService;
 import com.devdocs.ai.preretrieval.embedding.service.QueryEmbeddingService;
+import com.devdocs.ai.preretrieval.filter.MetadataFilter;
 import com.devdocs.ai.preretrieval.query.dto.QueryNormalizationResponse;
 import com.devdocs.ai.preretrieval.query.dto.QueryPipelineRequest;
 import com.devdocs.ai.preretrieval.query.dto.QueryPipelineResponse;
@@ -40,7 +41,15 @@ public class QueryPipelineService {
     }
 
     public QueryPipelineResponse retrieve(QueryPipelineRequest request) {
-        validateRequest(request);
+        return retrieve(request, null);
+    }
+
+    /**
+     * @param filter validated URL metadata filter; null = standard
+     *               version-scoped flow (versionId required)
+     */
+    public QueryPipelineResponse retrieve(QueryPipelineRequest request, MetadataFilter filter) {
+        validateRequest(request, filter);
 
         QueryNormalizationResponse normalization =
                 queryNormalizationService.normalize(request.query());
@@ -51,7 +60,8 @@ public class QueryPipelineService {
         VectorSearchRequest searchRequest = new VectorSearchRequest(
                 request.versionId(),
                 embedding,
-                request.topK()
+                request.topK(),
+                filter
         );
 
         List<VectorSearchResult> results =
@@ -75,11 +85,13 @@ public class QueryPipelineService {
                 request.topK(),
                 results,
                 rerankedResults,
-                stitchedContexts
+                stitchedContexts,
+                filter == null ? null : new QueryPipelineResponse.AppliedFilter(
+                        filter.mode().name(), filter.describe())
         );
     }
 
-    private void validateRequest(QueryPipelineRequest request) {
+    private void validateRequest(QueryPipelineRequest request, MetadataFilter filter) {
         if (request == null) {
             throw new IllegalArgumentException(
                     "Query pipeline request must not be null."
@@ -92,7 +104,11 @@ public class QueryPipelineService {
             );
         }
 
-        if (request.versionId() == null || request.versionId() <= 0) {
+        // Without a filter, versionId is required (standard flow). With a
+        // filter it is optional, but must be valid when supplied.
+        if (filter == null
+                ? request.versionId() == null || request.versionId() <= 0
+                : request.versionId() != null && request.versionId() <= 0) {
             throw new IllegalArgumentException(
                     "versionId must be greater than zero."
             );
