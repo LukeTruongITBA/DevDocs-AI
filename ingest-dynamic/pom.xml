@@ -61,6 +61,12 @@
             <version>${jsoup.version}</version>
         </dependency>
 
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.8</version>
+        </dependency>
+
         <!-- Monitoring -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -78,6 +78,25 @@ class DocumentServiceTest {
     }
 
     @Test
+    void createRejectingExistingShouldUsePlainInsertForWebDocument() {
+        CreateDocumentRequest request = new CreateDocumentRequest(
+                "Spring Boot Documentation",
+                "WEB",
+                "https://docs.spring.io/spring-boot/"
+        );
+
+        documentService.createRejectingExisting(request);
+
+        verify(documentRepository).save(
+                "Spring Boot Documentation",
+                "WEB",
+                "https://docs.spring.io/spring-boot/"
+        );
+        verify(documentRepository, never())
+                .saveOrGetWebDocument(anyString(), anyString());
+    }
+
+    @Test
     void findByIdShouldReturn404WhenDocumentDoesNotExist() {
         when(documentRepository.findById(999L))
                 .thenThrow(new EmptyResultDataAccessException(1));

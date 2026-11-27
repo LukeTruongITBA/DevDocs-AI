@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.Arrays;
 
 @Component
 public class WebsiteFetcher {
@@ -33,6 +34,43 @@ public class WebsiteFetcher {
     }
 
     public Document fetch(String url) throws IOException {
+        Connection.Response response = fetchResponse(url);
+        validateContentType(response.contentType());
+
+        try {
+            return response.parse();
+        } catch (IOException exception) {
+            throw new WebsiteFetchException(
+                    "Failed to parse website HTML content.",
+                    exception
+            );
+        }
+    }
+
+    public byte[] fetchPdf(String url) throws IOException {
+        Connection.Response response = fetchResponse(url);
+        String contentType = response.contentType();
+        byte[] content = response.bodyAsBytes();
+        boolean pdfContentType = contentType != null
+                && contentType.toLowerCase(Locale.ROOT)
+                .split(";")[0].trim().equals("application/pdf");
+        boolean pdfSignature = content.length >= 5
+                && Arrays.equals(
+                        Arrays.copyOf(content, 5),
+                        new byte[]{'%', 'P', 'D', 'F', '-'}
+                );
+
+        if (!pdfContentType && !pdfSignature) {
+            throw new WebsiteFetchException(
+                    "Remote document is not a PDF."
+            );
+        }
+
+        return content;
+    }
+
+    private Connection.Response fetchResponse(String url)
+            throws IOException {
         URI initialUri = urlSecurityValidator.validate(url);
         URI currentUri = initialUri;
 
@@ -112,17 +150,7 @@ public class WebsiteFetcher {
                 );
             }
 
-            validateContentType(response.contentType());
-
-            try {
-                return response.parse();
-
-            } catch (IOException exception) {
-                throw new WebsiteFetchException(
-                        "Failed to parse website HTML content.",
-                        exception
-                );
-            }
+            return response;
         }
     }
 

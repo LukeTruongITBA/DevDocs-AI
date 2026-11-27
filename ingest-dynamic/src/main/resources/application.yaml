@@ -25,15 +25,25 @@ app:
   ingestion:
     chunk-size: ${CHUNK_SIZE:1000}
     chunk-overlap: ${CHUNK_OVERLAP:200}
-    max-pages: 100
-    request-timeout-seconds: 20
+    max-pages: ${INGESTION_MAX_PAGES:100}
+    request-timeout-seconds: ${INGESTION_REQUEST_TIMEOUT_SECONDS:20}
+    max-batch-sources: ${INGESTION_MAX_BATCH_SOURCES:4}
+    max-extracted-characters: ${INGESTION_MAX_EXTRACTED_CHARACTERS:100000}
+    max-chunks-per-source: ${INGESTION_MAX_CHUNKS_PER_SOURCE:200}
 
   document-service:
     base-url: ${DOCUMENT_SERVICE_URL:http://localhost:8081}
 
   embedding:
-    api-url: ${GEMINI_API_URL:https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents}
+    provider: ${EMBEDDING_PROVIDER:ollama}
+    api-url: ${OLLAMA_EMBEDDING_URL:http://localhost:11434/api/embed}
     api-key: ${GEMINI_API_KEY:}
-    model: ${EMBEDDING_MODEL:models/gemini-embedding-001}
-    dimensions: ${EMBEDDING_DIMENSIONS:1536}
+    model: ${EMBEDDING_MODEL:nomic-embed-text:137m-v1.5-fp16}
+    dimensions: ${EMBEDDING_DIMENSIONS:768}
     batch-size: ${EMBEDDING_BATCH_SIZE:64}
+    max-attempts: ${EMBEDDING_MAX_ATTEMPTS:1}
+    initial-backoff-millis: ${EMBEDDING_INITIAL_BACKOFF_MILLIS:250}
+    max-backoff-millis: ${EMBEDDING_MAX_BACKOFF_MILLIS:2000}
+    jitter-ratio: ${EMBEDDING_JITTER_RATIO:0.2}
+    read-timeout-millis: ${EMBEDDING_READ_TIMEOUT_MILLIS:120000}
+    connect-timeout-millis: ${EMBEDDING_CONNECT_TIMEOUT_MILLIS:5000}

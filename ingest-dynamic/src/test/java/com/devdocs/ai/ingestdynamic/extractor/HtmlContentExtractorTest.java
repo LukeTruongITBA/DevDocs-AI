@@ -20,6 +20,10 @@ class HtmlContentExtractorTest {
                 <body>
                     <header>Site Header</header>
                     <nav>Navigation Menu</nav>
+                    <div id="cookie-consent-banner">Accept cookies</div>
+                    <div role="dialog" aria-label="Consent preferences">
+                        Consent settings
+                    </div>
                     <main>
                         <h1>Spring Boot Reference</h1>
                         <p>Spring Boot simplifies Java development.</p>
@@ -45,6 +49,8 @@ class HtmlContentExtractorTest {
         ));
         assertFalse(result.content().contains("Navigation Menu"));
         assertFalse(result.content().contains("Page Footer"));
+        assertFalse(result.content().contains("Accept cookies"));
+        assertFalse(result.content().contains("Consent settings"));
         assertFalse(result.content().contains("alert"));
     }
 
@@ -136,6 +142,28 @@ class HtmlContentExtractorTest {
                 () -> extractor.extract(
                         Jsoup.parse("<h1>Documentation</h1><main></main>"),
                         "https://example.com/docs"
+                )
+        );
+    }
+
+    @Test
+    void shouldRejectPageWhenCleanupRemovesAllBodyContent() {
+        String html = """
+                <html>
+                  <head><title>Navigation-only page</title></head>
+                  <body>
+                    <nav>Home Documentation Downloads</nav>
+                    <footer>Copyright 2026</footer>
+                    <div id="cookie-banner">Accept cookies</div>
+                  </body>
+                </html>
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> extractor.extract(
+                        Jsoup.parse(html),
+                        "https://example.com/navigation-only"
                 )
         );
     }

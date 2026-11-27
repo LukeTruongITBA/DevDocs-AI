@@ -2,6 +2,7 @@
 package com.devdocs.ai.ingestdynamic.service;
 
 import com.devdocs.ai.ingestdynamic.chunker.DynamicTextChunker;
+import com.devdocs.ai.ingestdynamic.config.IngestionProperties;
 import com.devdocs.ai.ingestdynamic.client.DocumentServiceClient;
 import com.devdocs.ai.ingestdynamic.dto.CrawlFailure;
 import com.devdocs.ai.ingestdynamic.dto.CrawlFailureStage;
@@ -9,6 +10,7 @@ import com.devdocs.ai.ingestdynamic.dto.CrawlResult;
 import com.devdocs.ai.ingestdynamic.dto.CrawledPage;
 import com.devdocs.ai.ingestdynamic.dto.DocumentResponse;
 import com.devdocs.ai.ingestdynamic.dto.DocumentVersionResponse;
+import com.devdocs.ai.ingestdynamic.dto.DynamicIngestionRequest;
 import com.devdocs.ai.ingestdynamic.dto.TextChunk;
 import com.devdocs.ai.ingestdynamic.embedding.GeminiEmbeddingService;
 import com.devdocs.ai.ingestdynamic.extractor.ExtractedPage;
@@ -16,10 +18,10 @@ import com.devdocs.ai.ingestdynamic.repository.DynamicChunkRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.io.IOException;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -49,7 +51,6 @@ class DynamicIngestionServiceTest {
     @Mock
     private DynamicChunkRepository chunkRepository;
 
-    @InjectMocks
     private DynamicIngestionService ingestionService;
 
     private CrawledPage crawledPage;
@@ -58,6 +59,15 @@ class DynamicIngestionServiceTest {
 
     @BeforeEach
     void setUp() {
+        ingestionService = new DynamicIngestionService(
+                websiteCrawler,
+                textChunker,
+                embeddingService,
+                documentServiceClient,
+                chunkRepository,
+                new IngestionProperties(1000, 200, 100, 20,
+                        4, 100_000, 200)
+        );
         ExtractedPage extractedPage = new ExtractedPage(
                 "Spring Boot Reference",
                 WEBSITE_URL,
@@ -94,7 +104,7 @@ class DynamicIngestionServiceTest {
         when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
                 .thenReturn(completeCrawlResult());
 
-        when(documentServiceClient.createDocument(any()))
+        when(documentServiceClient.findDocumentBySourceUri(WEBSITE_URL))
                 .thenReturn(document);
 
         String checksum = calculateChecksum();
@@ -112,6 +122,11 @@ class DynamicIngestionServiceTest {
 
         when(documentServiceClient.findVersions(10L))
                 .thenReturn(List.of(existingVersion));
+        when(textChunker.chunk(crawledPage))
+                .thenReturn(List.of(textChunk));
+        when(chunkRepository.hasMatchingChunks(
+                20L, List.of(textChunk)
+        )).thenReturn(true);
 
         DynamicIngestionService.IngestionResult result =
                 ingestionService.ingest(WEBSITE_URL, VERSION);
@@ -124,7 +139,7 @@ class DynamicIngestionServiceTest {
         verify(embeddingService, never()).embed(anyList());
 
         verify(chunkRepository, never())
-                .replaceChunks(anyLong(), anyLong(), anyList(), anyList());
+                .insertChunks(anyLong(), anyLong(), anyList(), anyList());
 
         verify(documentServiceClient, never())
                 .createVersion(anyLong(), any());
@@ -139,9 +154,6 @@ class DynamicIngestionServiceTest {
 
         when(documentServiceClient.createDocument(any()))
                 .thenReturn(document);
-
-        when(documentServiceClient.findVersions(10L))
-                .thenReturn(List.of());
 
         when(textChunker.chunk(crawledPage))
                 .thenReturn(List.of(textChunk));
@@ -179,12 +191,97 @@ class DynamicIngestionServiceTest {
         verify(documentServiceClient)
                 .createVersion(eq(10L), any());
 
-        verify(chunkRepository).replaceChunks(
+        verify(chunkRepository).insertChunks(
                 eq(10L),
                 eq(21L),
                 anyList(),
                 anyList()
         );
+    }
+
+    @Test
+    void shouldRejectConflictingExistingVersionWithoutReplacingChunks()
+            throws Exception {
+        when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
+                .thenReturn(completeCrawlResult());
+        when(documentServiceClient.findDocumentBySourceUri(WEBSITE_URL))
+                .thenReturn(document);
+        when(documentServiceClient.findVersions(10L))
+                .thenReturn(List.of(new DocumentVersionResponse(
+                        21L, 10L, VERSION, "different-checksum", true,
+                        null, null
+                )));
+        when(textChunker.chunk(crawledPage))
+                .thenReturn(List.of(textChunk));
+        assertThrows(
+                com.devdocs.ai.ingestdynamic.exception.IngestionConflictException.class,
+                () -> ingestionService.ingest(WEBSITE_URL, VERSION)
+        );
+
+        verify(embeddingService, never()).embed(anyList());
+        verify(documentServiceClient, never()).createVersion(anyLong(), any());
+        verify(chunkRepository, never()).insertChunks(
+                anyLong(), anyLong(), anyList(), anyList()
+        );
+    }
+
+    @Test
+    void shouldRejectOversizedExtractedContentBeforeDocumentWrites()
+            throws Exception {
+        CrawledPage oversized = new CrawledPage(
+                new ExtractedPage("large", WEBSITE_URL,
+                        "x".repeat(100_001)),
+                VERSION
+        );
+        when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
+                .thenReturn(new CrawlResult(
+                        List.of(oversized), 1, 0, List.of(), 0, false
+                ));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ingestionService.ingest(WEBSITE_URL, VERSION));
+        verifyNoInteractions(documentServiceClient, embeddingService,
+                chunkRepository);
+    }
+
+    @Test
+    void shouldRejectBatchAboveConfiguredSourceLimitBeforeCrawling() {
+        List<DynamicIngestionRequest> sources = List.of(
+                new DynamicIngestionRequest(WEBSITE_URL, VERSION),
+                new DynamicIngestionRequest(WEBSITE_URL, VERSION),
+                new DynamicIngestionRequest(WEBSITE_URL, VERSION),
+                new DynamicIngestionRequest(WEBSITE_URL, VERSION),
+                new DynamicIngestionRequest(WEBSITE_URL, VERSION)
+        );
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ingestionService.ingestBatch(sources));
+        verifyNoInteractions(websiteCrawler, documentServiceClient,
+                embeddingService, chunkRepository);
+    }
+
+    @Test
+    void shouldRejectChunkCountAboveConfiguredLimitBeforeDocumentWrites()
+            throws Exception {
+        ingestionService = new DynamicIngestionService(
+                websiteCrawler, textChunker, embeddingService,
+                documentServiceClient, chunkRepository,
+                new IngestionProperties(1000, 200, 100, 20,
+                        4, 100_000, 1)
+        );
+        TextChunk secondChunk = new TextChunk(
+                1, "Second content", WEBSITE_URL, "Spring Boot Reference",
+                VERSION
+        );
+        when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
+                .thenReturn(completeCrawlResult());
+        when(textChunker.chunk(crawledPage))
+                .thenReturn(List.of(textChunk, secondChunk));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ingestionService.ingest(WEBSITE_URL, VERSION));
+        verifyNoInteractions(documentServiceClient, embeddingService,
+                chunkRepository);
     }
 
     @Test
@@ -220,7 +317,7 @@ class DynamicIngestionServiceTest {
     }
 
     @Test
-    void shouldRejectIncompleteCrawlBeforeAnyIngestionSideEffects()
+    void shouldRejectPartialCrawlWithoutPersistingTruncatedSource()
             throws Exception {
 
         CrawlFailure failure = new CrawlFailure(
@@ -243,25 +340,60 @@ class DynamicIngestionServiceTest {
 
         IllegalStateException exception = assertThrows(
                 IllegalStateException.class,
-                () -> ingestionService.ingest(
-                        WEBSITE_URL,
+                () -> ingestionService.ingest(WEBSITE_URL, VERSION)
+        );
+        assertTrue(exception.getMessage().contains("was incomplete"));
+        assertTrue(exception.getMessage().contains("FETCH"));
+        verifyNoInteractions(documentServiceClient, textChunker,
+                embeddingService, chunkRepository);
+    }
+
+    @Test
+    void shouldContinueBatchAfterOneSourceFails() throws Exception {
+        String queryUrl = "https://docs.example.org/page?locale=en";
+        String failedUrl = "https://files.example.org/unavailable.pdf";
+        List<DynamicIngestionRequest> sources = List.of(
+                new DynamicIngestionRequest(failedUrl, VERSION),
+                new DynamicIngestionRequest(queryUrl, VERSION),
+                new DynamicIngestionRequest(
+                        "https://github.com/example/docs/tree/main/docs",
                         VERSION
                 )
         );
+        when(websiteCrawler.crawl(anyString(), any()))
+                .thenAnswer(invocation -> {
+                    String url = invocation.getArgument(0);
+                    if (failedUrl.equals(url)) {
+                        throw new IOException("HTTP 503");
+                    }
+                    return completeCrawlResult();
+                });
+        when(documentServiceClient.createDocument(any()))
+                .thenReturn(document);
+        when(textChunker.chunk(any(CrawledPage.class)))
+                .thenReturn(List.of(textChunk));
+        when(embeddingService.embed(anyList()))
+                .thenReturn(List.of(new float[]{0.1f, 0.2f}));
+        when(documentServiceClient.createVersion(eq(10L), any()))
+                .thenReturn(new DocumentVersionResponse(
+                        23L, 10L, VERSION, calculateChecksum(), true,
+                        null, null
+                ));
 
-        assertTrue(
-                exception.getMessage().contains("incomplete")
-        );
+        DynamicIngestionService.BatchIngestionResult result =
+                ingestionService.ingestBatch(sources);
 
-        assertTrue(
-                exception.getMessage().contains("FETCH")
-        );
-
-        verifyNoInteractions(
-                documentServiceClient,
-                textChunker,
-                embeddingService,
-                chunkRepository
+        assertEquals(3, result.sourceCount());
+        assertEquals(2, result.succeeded());
+        assertEquals(1, result.failed());
+        assertFalse(result.results().get(0).succeeded());
+        assertEquals(failedUrl, result.results().get(0).sourceUrl());
+        assertEquals("HTTP 503", result.results().get(0).error());
+        assertTrue(result.results().get(1).succeeded());
+        assertTrue(result.results().get(2).succeeded());
+        verify(websiteCrawler).crawl(queryUrl, VERSION);
+        verify(chunkRepository, times(2)).insertChunks(
+                eq(10L), eq(23L), anyList(), anyList()
         );
     }
 
@@ -271,12 +403,6 @@ class DynamicIngestionServiceTest {
 
         when(websiteCrawler.crawl(WEBSITE_URL, VERSION))
                 .thenReturn(completeCrawlResult());
-
-        when(documentServiceClient.createDocument(any()))
-                .thenReturn(document);
-
-        when(documentServiceClient.findVersions(10L))
-                .thenReturn(List.of());
 
         when(textChunker.chunk(crawledPage))
                 .thenReturn(List.of(textChunk));
@@ -298,7 +424,7 @@ class DynamicIngestionServiceTest {
                 .createVersion(anyLong(), any());
 
         verify(chunkRepository, never())
-                .replaceChunks(
+                .insertChunks(
                         anyLong(),
                         anyLong(),
                         anyList(),

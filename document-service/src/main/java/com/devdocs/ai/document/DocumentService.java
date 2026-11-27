@@ -36,6 +36,19 @@ public class DocumentService {
         );
     }
 
+    /**
+     * Creates a document without the WEB source URI upsert behavior. The
+     * database uniqueness constraint turns a concurrent existing-source race
+     * into an observable conflict instead of an update.
+     */
+    public Document createRejectingExisting(CreateDocumentRequest request) {
+        return documentRepository.save(
+                request.title(),
+                request.sourceType(),
+                request.sourceUri()
+        );
+    }
+
     public List<Document> findAll() {
         return documentRepository.findAll();
     }

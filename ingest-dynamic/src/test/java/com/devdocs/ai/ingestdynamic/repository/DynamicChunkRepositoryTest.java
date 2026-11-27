@@ -3,6 +3,7 @@ package com.devdocs.ai.ingestdynamic.repository;
 
 import com.devdocs.ai.ingestdynamic.config.EmbeddingProperties;
 import com.devdocs.ai.ingestdynamic.dto.TextChunk;
+import com.devdocs.ai.ingestdynamic.util.ChecksumUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -11,10 +12,13 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import tools.jackson.databind.ObjectMapper;
 
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.Types;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -58,7 +62,8 @@ class DynamicChunkRepositoryTest {
                 new TextChunk(
                         0, "First page chunk",
                         "https://docs.example.com/a",
-                        "Page A", "3.6"
+                        "Page A", "3.6",
+                        Instant.parse("2026-11-26T10:15:30Z")
                 ),
                 new TextChunk(
                         0, "Second page chunk",
@@ -80,7 +85,7 @@ class DynamicChunkRepositoryTest {
                 any(BatchPreparedStatementSetter.class)
         )).thenReturn(new int[]{1, 1});
 
-        repository.replaceChunks(1L, 2L, chunks, embeddings);
+        repository.insertChunks(1L, 2L, chunks, embeddings);
 
         ArgumentCaptor<BatchPreparedStatementSetter> captor =
                 ArgumentCaptor.forClass(BatchPreparedStatementSetter.class);
@@ -118,13 +123,117 @@ class DynamicChunkRepositoryTest {
         assertTrue(metadata.keySet().containsAll(Set.of(
                 "doc_id", "version", "source", "page", "chunk_index", "checksum"
         )));
+        assertEquals(1L, metadata.get("doc_id"));
+        assertEquals("3.6", metadata.get("version"));
         assertEquals("https://docs.example.com/a", metadata.get("source"));
+        assertEquals("https://docs.example.com/a", metadata.get("source_url"));
+        assertEquals(0, metadata.get("chunk_index"));
+        assertEquals(ChecksumUtils.sha256("First page chunk"),
+                metadata.get("checksum"));
         assertEquals("WEB", metadata.get("source_type"));
-        assertEquals(Map.of(
-                "type", "web",
-                "url", "https://docs.example.com/a",
-                "title", "Page A"
-        ), metadata.get("page"));
+        assertEquals("2026-11-26T10:15:30Z", metadata.get("fetch_date"));
+        assertEquals("https://docs.example.com/a",
+                ((Map<?, ?>) metadata.get("page")).get("url"));
+        assertEquals("2026-11-26T10:15:30Z",
+                ((Map<?, ?>) metadata.get("page")).get("fetch_date"));
+    }
+
+    @Test
+    void shouldPersistPdfPageProvenanceWithAllRequiredMetadataFields()
+            throws Exception {
+        TextChunk pdfChunk = new TextChunk(
+                0, "PDF page two content.",
+                "https://files.example.org/guide.pdf", "guide.pdf", "1",
+                Instant.parse("2026-11-26T10:15:30Z"), 2
+        );
+        when(objectMapper.writeValueAsString(anyMap())).thenReturn("{}");
+        when(jdbcTemplate.batchUpdate(anyString(),
+                any(BatchPreparedStatementSetter.class)))
+                .thenReturn(new int[]{1});
+
+        repository.insertChunks(9L, 10L, List.of(pdfChunk),
+                List.of(vector(0.1f)));
+
+        ArgumentCaptor<BatchPreparedStatementSetter> setterCaptor =
+                ArgumentCaptor.forClass(BatchPreparedStatementSetter.class);
+        verify(jdbcTemplate).batchUpdate(anyString(), setterCaptor.capture());
+        PreparedStatement statement = mock(PreparedStatement.class);
+        setterCaptor.getValue().setValues(statement, 0);
+        verify(statement).setNull(4, Types.INTEGER);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> metadataCaptor =
+                (ArgumentCaptor<Map<String, Object>>) (ArgumentCaptor<?>)
+                        ArgumentCaptor.forClass(Map.class);
+        verify(objectMapper).writeValueAsString(metadataCaptor.capture());
+        Map<String, Object> metadata = metadataCaptor.getValue();
+        assertTrue(metadata.keySet().containsAll(Set.of(
+                "doc_id", "version", "source", "page", "chunk_index", "checksum"
+        )));
+        Map<?, ?> page = (Map<?, ?>) metadata.get("page");
+        assertEquals("web", page.get("type"));
+        assertEquals("application/pdf", page.get("content_type"));
+        assertEquals(2, page.get("pdf_page_number"));
+        assertEquals("https://files.example.org/guide.pdf", page.get("url"));
+        assertEquals("https://files.example.org/guide.pdf", metadata.get("source"));
+        assertEquals(9L, metadata.get("doc_id"));
+        assertEquals("1", metadata.get("version"));
+        assertEquals(0, metadata.get("chunk_index"));
+        assertEquals(ChecksumUtils.sha256(pdfChunk.content()), metadata.get("checksum"));
+    }
+
+    @Test
+    void shouldConfirmPersistedChunkFingerprintMatchesExpectedContent()
+            throws Exception {
+        TextChunk chunk = new TextChunk(
+                0, "Persisted content", "https://docs.example.com",
+                "Docs", "1"
+        );
+        stubStoredChunk(0, ChecksumUtils.sha256(chunk.content()), true);
+
+        assertTrue(repository.hasMatchingChunks(2L, List.of(chunk)));
+    }
+
+    @Test
+    void shouldRejectMissingOrMismatchedPersistedChunks() throws Exception {
+        TextChunk chunk = new TextChunk(
+                0, "Expected content", "https://docs.example.com",
+                "Docs", "1"
+        );
+        stubStoredChunk(1, "0".repeat(64), true);
+
+        assertFalse(repository.hasMatchingChunks(2L, List.of(chunk)));
+        verify(jdbcTemplate).query(anyString(), any(RowMapper.class),
+                any(Object[].class));
+    }
+
+    @Test
+    void shouldNotTreatChunkWithoutEmbeddingAsComplete() throws Exception {
+        TextChunk chunk = new TextChunk(
+                0, "Persisted content", "https://docs.example.com",
+                "Docs", "1"
+        );
+        stubStoredChunk(0, ChecksumUtils.sha256(chunk.content()), false);
+
+        assertFalse(repository.hasMatchingChunks(2L, List.of(chunk)));
+    }
+
+    private void stubStoredChunk(
+            int index,
+            String checksum,
+            boolean hasEmbedding
+    )
+            throws Exception {
+        doAnswer(invocation -> {
+            RowMapper<?> mapper = invocation.getArgument(1);
+            ResultSet resultSet = mock(ResultSet.class);
+            when(resultSet.getInt("chunk_index")).thenReturn(index);
+            when(resultSet.getString("checksum")).thenReturn(checksum);
+            when(resultSet.getBoolean("has_embedding"))
+                    .thenReturn(hasEmbedding);
+            return List.of(mapper.mapRow(resultSet, 0));
+        }).when(jdbcTemplate).query(anyString(), any(RowMapper.class),
+                any(Object[].class));
     }
 
     @Test
@@ -141,7 +250,7 @@ class DynamicChunkRepositoryTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> repository.replaceChunks(
+                () -> repository.insertChunks(
                         1L, 2L, chunks, embeddings
                 )
         );
@@ -165,7 +274,7 @@ class DynamicChunkRepositoryTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> repository.replaceChunks(
+                () -> repository.insertChunks(
                         1L, 2L, chunks, embeddings
                 )
         );
@@ -189,7 +298,7 @@ class DynamicChunkRepositoryTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> repository.replaceChunks(
+                () -> repository.insertChunks(
                         1L, 2L, chunks, embeddings
                 )
         );
@@ -200,7 +309,7 @@ class DynamicChunkRepositoryTest {
     @Test
     void shouldRejectMissingWebChunkMetadataBeforeDatabaseWrite() {
         assertThrows(IllegalArgumentException.class, () ->
-                repository.replaceChunks(
+                repository.insertChunks(
                         1L, 2L, Collections.singletonList(null),
                         List.of(vector(0.1f))
                 ));

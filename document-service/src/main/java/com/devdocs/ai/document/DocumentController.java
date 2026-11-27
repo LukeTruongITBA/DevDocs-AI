@@ -23,7 +23,24 @@ public class DocumentController {
     public ResponseEntity<Document> create(
             @Valid @RequestBody CreateDocumentRequest request
     ) {
-        Document document = documentService.create(request);
+        return create(request, false);
+    }
+
+    @PostMapping(params = "rejectExisting")
+    public ResponseEntity<Document> createRejectingExisting(
+            @Valid @RequestBody CreateDocumentRequest request,
+            @RequestParam boolean rejectExisting
+    ) {
+        return create(request, rejectExisting);
+    }
+
+    private ResponseEntity<Document> create(
+            CreateDocumentRequest request,
+            boolean rejectExisting
+    ) {
+        Document document = rejectExisting
+                ? documentService.createRejectingExisting(request)
+                : documentService.create(request);
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)

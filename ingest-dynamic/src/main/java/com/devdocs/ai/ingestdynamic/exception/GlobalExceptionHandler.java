@@ -77,6 +77,16 @@ public class GlobalExceptionHandler {
         );
     }
 
+    @ExceptionHandler(IngestionConflictException.class)
+    public ResponseEntity<ApiErrorResponse> handleIngestionConflict(
+            IngestionConflictException exception
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage()
+        );
+    }
+
     private ResponseEntity<ApiErrorResponse> buildResponse(
             HttpStatus status,
             String message

@@ -19,7 +19,16 @@ public class HtmlContentExtractor {
             "aside",
             "form",
             "button",
-            "svg"
+            "svg",
+            "[role=banner]",
+            "[id*=cookie]",
+            "[class*=cookie]",
+            "[id*=consent]",
+            "[class*=consent]",
+            "[aria-label*=cookie]",
+            "[data-testid*=cookie]",
+            "[aria-label*=consent]",
+            "[data-testid*=consent]"
     };
 
     public ExtractedPage extract(Document document, String sourceUrl) {

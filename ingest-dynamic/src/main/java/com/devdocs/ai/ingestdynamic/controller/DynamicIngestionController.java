@@ -2,6 +2,7 @@
 package com.devdocs.ai.ingestdynamic.controller;
 
 import com.devdocs.ai.ingestdynamic.dto.DynamicIngestionRequest;
+import com.devdocs.ai.ingestdynamic.dto.DynamicIngestionBatchRequest;
 import com.devdocs.ai.ingestdynamic.service.DynamicIngestionService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -36,5 +37,13 @@ public class DynamicIngestionController {
                 );
 
         return ResponseEntity.ok(result);
+    }
+
+    @PostMapping("/batch")
+    public ResponseEntity<DynamicIngestionService.BatchIngestionResult>
+    ingestBatch(@Valid @RequestBody DynamicIngestionBatchRequest request) {
+        return ResponseEntity.ok(
+                ingestionService.ingestBatch(request.sources())
+        );
     }
 }

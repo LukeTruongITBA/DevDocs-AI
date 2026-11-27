@@ -64,7 +64,9 @@ public class DynamicTextChunker {
                         chunkContent,
                         crawledPage.page().sourceUrl(),
                         crawledPage.page().title(),
-                        crawledPage.version()
+                        crawledPage.version(),
+                        crawledPage.fetchedAt(),
+                        crawledPage.pdfPageNumber()
                 ));
             }
 

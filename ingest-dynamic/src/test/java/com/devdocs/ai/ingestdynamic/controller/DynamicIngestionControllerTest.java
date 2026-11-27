@@ -13,6 +13,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 
 import java.io.IOException;
+import java.util.List;
 
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -165,5 +166,58 @@ class DynamicIngestionControllerTest {
                 .andExpect(jsonPath("$.status").value(422))
                 .andExpect(jsonPath("$.message")
                         .value("Website crawler returned no pages."));
+    }
+
+    @Test
+    void shouldReturnPerSourceBatchOutcomes() throws Exception {
+        DynamicIngestionService.BatchIngestionResult result =
+                new DynamicIngestionService.BatchIngestionResult(
+                        2,
+                        1,
+                        1,
+                        List.of(
+                                new DynamicIngestionService.SourceIngestionResult(
+                                        "https://docs.example/page",
+                                        true,
+                                        null,
+                                        null
+                                ),
+                                new DynamicIngestionService.SourceIngestionResult(
+                                        "https://files.example/broken.pdf",
+                                        false,
+                                        null,
+                                        "HTTP 503"
+                                )
+                        )
+                );
+        when(ingestionService.ingestBatch(org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(result);
+
+        mockMvc.perform(post("/api/ingestion/dynamic/batch")
+                        .contentType("application/json")
+                        .content("""
+                                {"sources":[
+                                  {"websiteUrl":"https://docs.example/page"},
+                                  {"websiteUrl":"https://files.example/broken.pdf"}
+                                ]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sourceCount").value(2))
+                .andExpect(jsonPath("$.succeeded").value(1))
+                .andExpect(jsonPath("$.failed").value(1))
+                .andExpect(jsonPath("$.results[1].succeeded").value(false))
+                .andExpect(jsonPath("$.results[1].error").value("HTTP 503"));
+
+        verify(ingestionService).ingestBatch(org.mockito.ArgumentMatchers.anyList());
+    }
+
+    @Test
+    void shouldRejectAnEmptyBatchBeforeCallingService() throws Exception {
+        mockMvc.perform(post("/api/ingestion/dynamic/batch")
+                        .contentType("application/json")
+                        .content("{\"sources\":[]}"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(ingestionService);
     }
 }

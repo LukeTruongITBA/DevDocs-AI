@@ -11,13 +11,19 @@ import com.devdocs.ai.ingestdynamic.exception.WebsiteSecurityException;
 import com.devdocs.ai.ingestdynamic.extractor.ExtractedPage;
 import com.devdocs.ai.ingestdynamic.extractor.HtmlContentExtractor;
 import com.devdocs.ai.ingestdynamic.fetcher.WebsiteFetcher;
+import com.devdocs.ai.ingestdynamic.fetcher.GitHubDocsFetcher;
 import com.devdocs.ai.ingestdynamic.version.VersionDetectionResult;
 import com.devdocs.ai.ingestdynamic.version.VersionDetector;
+import com.devdocs.ai.ingestdynamic.util.UrlLogSanitizer;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
 
 import java.io.IOException;
 import java.net.URI;
@@ -31,6 +37,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Queue;
 import java.util.Set;
+import java.time.Instant;
+import java.util.Locale;
 
 @Component
 public class WebsiteCrawler {
@@ -42,6 +50,22 @@ public class WebsiteCrawler {
     private final HtmlContentExtractor contentExtractor;
     private final VersionDetector versionDetector;
     private final IngestionProperties properties;
+    private final GitHubDocsFetcher gitHubDocsFetcher;
+
+    @Autowired
+    public WebsiteCrawler(
+            WebsiteFetcher websiteFetcher,
+            HtmlContentExtractor contentExtractor,
+            VersionDetector versionDetector,
+            IngestionProperties properties,
+            GitHubDocsFetcher gitHubDocsFetcher
+    ) {
+        this.websiteFetcher = websiteFetcher;
+        this.contentExtractor = contentExtractor;
+        this.versionDetector = versionDetector;
+        this.properties = properties;
+        this.gitHubDocsFetcher = gitHubDocsFetcher;
+    }
 
     public WebsiteCrawler(
             WebsiteFetcher websiteFetcher,
@@ -49,10 +73,7 @@ public class WebsiteCrawler {
             VersionDetector versionDetector,
             IngestionProperties properties
     ) {
-        this.websiteFetcher = websiteFetcher;
-        this.contentExtractor = contentExtractor;
-        this.versionDetector = versionDetector;
-        this.properties = properties;
+        this(websiteFetcher, contentExtractor, versionDetector, properties, null);
     }
 
     public CrawlResult crawl(
@@ -61,6 +82,34 @@ public class WebsiteCrawler {
     ) throws IOException {
 
         URI startUri = normalizeUrl(startUrl);
+
+        if (gitHubDocsFetcher != null
+                && gitHubDocsFetcher.supports(startUri.toString())) {
+            GitHubDocsFetcher.Result repositoryResult =
+                    gitHubDocsFetcher.fetch(
+                            startUri.toString(),
+                            explicitVersion
+                    );
+            log.info(
+                    "Repository docs fetch completed: sourceUrl={}, "
+                            + "documents={}, failures={}",
+                    UrlLogSanitizer.sanitize(startUri.toString()),
+                    repositoryResult.pages().size(),
+                    repositoryResult.failures().size()
+            );
+            return new CrawlResult(
+                    repositoryResult.pages(),
+                    repositoryResult.pages().size(),
+                    0,
+                    repositoryResult.failures(),
+                    0,
+                    false
+            );
+        }
+
+        if (startUri.getPath().toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+            return crawlRemotePdf(startUri, explicitVersion);
+        }
 
         String allowedHost = startUri.getHost();
         String allowedPathPrefix = createAllowedPathPrefix(
@@ -80,11 +129,12 @@ public class WebsiteCrawler {
         int fetchedPages = 0;
         int attemptedPages = 0;
         int duplicateContentPages = 0;
+        long extractedCharacters = 0;
 
         log.info(
                 "Starting website crawl: startUrl={}, allowedHost={}, "
                         + "allowedPathPrefix={}, maxPages={}",
-                startUri,
+                UrlLogSanitizer.sanitize(startUri.toString()),
                 allowedHost,
                 allowedPathPrefix,
                 properties.maxPages()
@@ -119,7 +169,7 @@ public class WebsiteCrawler {
 
                 log.warn(
                         "Failed to fetch website page: url={}, reason={}",
-                        currentUrl,
+                        UrlLogSanitizer.sanitize(currentUrl),
                         exception.getMessage()
                 );
 
@@ -189,7 +239,7 @@ public class WebsiteCrawler {
 
                 log.warn(
                         "Failed to detect website version: url={}, reason={}",
-                        currentUrl,
+                        UrlLogSanitizer.sanitize(currentUrl),
                         exception.getMessage()
                 );
 
@@ -219,7 +269,7 @@ public class WebsiteCrawler {
 
                 log.warn(
                         "Failed to extract website page: url={}, reason={}",
-                        currentUrl,
+                        UrlLogSanitizer.sanitize(currentUrl),
                         exception.getMessage()
                 );
 
@@ -230,18 +280,36 @@ public class WebsiteCrawler {
                     extractedPage.content()
             );
 
+            if (extractedCharacters + extractedPage.content().length()
+                    > properties.maxExtractedCharacters()) {
+                failures.add(new CrawlFailure(
+                        currentUrl,
+                        CrawlFailureStage.LIMIT,
+                        "Crawl exceeded the configured extracted-character limit."
+                ));
+                log.warn(
+                        "Stopping crawl at extracted-character limit: url={}, "
+                                + "limit={}",
+                        UrlLogSanitizer.sanitize(currentUrl),
+                        properties.maxExtractedCharacters()
+                );
+                break;
+            }
+            extractedCharacters += extractedPage.content().length();
+
             // Store only pages with unique extracted content.
             if (visitedContentChecksums.add(contentChecksum)) {
                 crawledPages.add(
                         new CrawledPage(
                                 extractedPage,
-                                websiteVersion
+                                websiteVersion,
+                                Instant.now()
                         )
                 );
 
                 log.debug(
                         "Crawl retained page: url={}, title={}, contentLength={}",
-                        currentUrl,
+                        UrlLogSanitizer.sanitize(currentUrl),
                         extractedPage.title(),
                         extractedPage.content().length()
                 );
@@ -251,7 +319,7 @@ public class WebsiteCrawler {
 
                 log.debug(
                         "Crawl skipped duplicate content: url={}, title={}",
-                        currentUrl,
+                        UrlLogSanitizer.sanitize(currentUrl),
                         extractedPage.title()
                 );
             }
@@ -289,6 +357,99 @@ public class WebsiteCrawler {
         );
 
         return result;
+    }
+
+    private CrawlResult crawlRemotePdf(
+            URI sourceUri,
+            String explicitVersion
+    ) {
+        String sourceUrl = sourceUri.toString();
+        try {
+            byte[] bytes = websiteFetcher.fetchPdf(sourceUrl);
+            try (PDDocument document = Loader.loadPDF(bytes)) {
+                String path = sourceUri.getPath();
+                String title = path.substring(path.lastIndexOf('/') + 1);
+                if (title.isBlank()) {
+                    title = "Remote PDF";
+                }
+                String version = explicitVersion == null
+                        || explicitVersion.isBlank()
+                        ? "1"
+                        : explicitVersion.trim();
+                Instant fetchedAt = Instant.now();
+                List<CrawledPage> pages = new ArrayList<>();
+                int extractedCharacters = 0;
+
+                for (int pageNumber = 1;
+                     pageNumber <= document.getNumberOfPages();
+                     pageNumber++) {
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    stripper.setStartPage(pageNumber);
+                    stripper.setEndPage(pageNumber);
+                    String content = stripper.getText(document)
+                            .replaceAll("\\s+", " ").trim();
+                    // A few PDFs contain a physical page number as the only
+                    // extracted text. Treat that footer artifact as blank,
+                    // while retaining the physical page number on real
+                    // content pages for provenance.
+                    if (content.matches("\\d+")) {
+                        content = "";
+                    }
+                    if (content.isBlank()) {
+                        continue;
+                    }
+                    extractedCharacters += content.length();
+                    if (extractedCharacters > properties.maxExtractedCharacters()) {
+                        throw new IllegalArgumentException(
+                                "Remote PDF exceeds the configured extracted-character limit."
+                        );
+                    }
+                    pages.add(new CrawledPage(
+                            new ExtractedPage(title, sourceUrl, content),
+                            version,
+                            fetchedAt,
+                            pageNumber
+                    ));
+                }
+
+                if (pages.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Remote PDF contains no extractable text."
+                    );
+                }
+                log.info(
+                        "Remote PDF extracted: sourceUrl={}, pages={}, "
+                                + "characters={}",
+                        UrlLogSanitizer.sanitize(sourceUrl),
+                        document.getNumberOfPages(),
+                        extractedCharacters
+                );
+                return new CrawlResult(
+                        pages, document.getNumberOfPages(), 0, List.of(), 0, false
+                );
+            }
+        } catch (Exception exception) {
+            String message = exception.getMessage() == null
+                    ? exception.getClass().getSimpleName()
+                    : exception.getMessage();
+            log.warn(
+                    "Remote PDF ingestion source failed: url={}, reason={}",
+                    UrlLogSanitizer.sanitize(sourceUrl),
+                    message
+            );
+            return new CrawlResult(
+                    List.of(),
+                    0,
+                    0,
+                    List.of(new CrawlFailure(
+                            sourceUrl,
+                            CrawlFailureStage.FETCH,
+                            message
+                    )),
+                    0,
+                    false
+            );
+        }
     }
 
     private void discoverLinks(

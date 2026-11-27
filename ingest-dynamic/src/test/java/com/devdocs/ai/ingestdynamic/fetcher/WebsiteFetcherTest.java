@@ -129,6 +129,31 @@ class WebsiteFetcherTest {
     }
 
     @Test
+    void shouldFetchRemotePdfBytes() throws IOException {
+        startTestServer();
+        byte[] pdfBytes = "%PDF-1.7\\nfixture".getBytes(StandardCharsets.UTF_8);
+        server.createContext("/sample.pdf", exchange -> {
+            exchange.getResponseHeaders().set(
+                    "Content-Type", "application/pdf"
+            );
+            exchange.sendResponseHeaders(200, pdfBytes.length);
+            try (var outputStream = exchange.getResponseBody()) {
+                outputStream.write(pdfBytes);
+            }
+        });
+
+        UrlSecurityValidator validator = mock(UrlSecurityValidator.class);
+        when(validator.validate(anyString()))
+                .thenAnswer(invocation ->
+                        URI.create(invocation.getArgument(0))
+                );
+        WebsiteFetcher fetcher = new WebsiteFetcher(properties, validator);
+
+        assertArrayEquals(pdfBytes, fetcher.fetchPdf(localUrl("/sample.pdf")));
+        verify(validator).validate(localUrl("/sample.pdf"));
+    }
+
+    @Test
     void shouldFollowSameOriginRedirect() throws IOException {
         startTestServer();
 

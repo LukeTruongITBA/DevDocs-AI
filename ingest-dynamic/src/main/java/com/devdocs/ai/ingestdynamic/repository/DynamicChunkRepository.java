@@ -14,7 +14,6 @@ import tools.jackson.databind.ObjectMapper;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Types;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
@@ -24,11 +23,6 @@ import java.util.regex.Pattern;
 public class DynamicChunkRepository {
 
     private static final Pattern SHA256 = Pattern.compile("[a-f0-9]{64}");
-
-    private static final String DELETE_SQL = """
-            DELETE FROM chunks
-            WHERE version_id = ?
-            """;
 
     private static final String INSERT_SQL = """
             INSERT INTO chunks (
@@ -58,21 +52,20 @@ public class DynamicChunkRepository {
     }
 
     /**
-     * Replaces all chunks belonging to a document version.
+     * Inserts chunks for a newly-created document version.
      *
      * Chunk indexes are reassigned globally across all crawled pages.
-     * The delete and insert operations run in one database transaction.
+     * The insert operations run in one database transaction. Existing
+     * versions are rejected by the service before this method is called.
      */
     @Transactional
-    public void replaceChunks(
+    public void insertChunks(
             Long documentId,
             Long versionId,
             List<TextChunk> chunks,
             List<float[]> embeddings
     ) {
         validateInput(documentId, versionId, chunks, embeddings);
-
-        jdbcTemplate.update(DELETE_SQL, versionId);
 
         jdbcTemplate.batchUpdate(
                 INSERT_SQL,
@@ -101,6 +94,9 @@ public class DynamicChunkRepository {
                         statement.setLong(1, versionId);
                         statement.setInt(2, index);
                         statement.setString(3, chunk.content());
+                        // V3 keeps dynamic resources as source_type=WEB and
+                        // requires page_number NULL. PDF page provenance is
+                        // stored explicitly in the JSON page metadata below.
                         statement.setNull(4, Types.INTEGER);
                         statement.setString(5, checksum);
                         statement.setString(6, metadata);
@@ -116,6 +112,60 @@ public class DynamicChunkRepository {
                     }
                 }
         );
+    }
+
+    /**
+     * Checks that a version has the expected contiguous chunk indexes and
+     * content checksums. Used to distinguish a completed ingestion from a
+     * version row left behind by a failed chunk replacement.
+     */
+    public boolean hasMatchingChunks(
+            Long versionId,
+            List<TextChunk> expectedChunks
+    ) {
+        if (versionId == null || versionId <= 0
+                || expectedChunks == null || expectedChunks.isEmpty()) {
+            return false;
+        }
+
+        List<StoredChunkFingerprint> stored = jdbcTemplate.query(
+                "SELECT chunk_index, checksum, embedding IS NOT NULL "
+                        + "AS has_embedding FROM chunks "
+                        + "WHERE version_id = ? ORDER BY chunk_index",
+                (resultSet, rowNum) -> new StoredChunkFingerprint(
+                        resultSet.getInt("chunk_index"),
+                        resultSet.getString("checksum"),
+                        resultSet.getBoolean("has_embedding")
+                ),
+                versionId
+        );
+
+        if (stored.size() != expectedChunks.size()) {
+            return false;
+        }
+
+        for (int index = 0; index < expectedChunks.size(); index++) {
+            StoredChunkFingerprint fingerprint = stored.get(index);
+            String expectedChecksum = ChecksumUtils.sha256(
+                    expectedChunks.get(index).content()
+            );
+            if (fingerprint.chunkIndex() != index
+                    || !fingerprint.hasEmbedding()
+                    || !expectedChecksum.equalsIgnoreCase(
+                            fingerprint.checksum()
+                    )) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private record StoredChunkFingerprint(
+            int chunkIndex,
+            String checksum,
+            boolean hasEmbedding
+    ) {
     }
 
     private void validateInput(
@@ -189,11 +239,17 @@ public class DynamicChunkRepository {
         metadata.put("version", chunk.version());
         metadata.put("source", chunk.sourceUrl());
         metadata.put("source_type", "WEB");
-        metadata.put("page", Map.of(
-                "type", "web",
-                "url", chunk.sourceUrl(),
-                "title", chunk.pageTitle()
-        ));
+        metadata.put("fetch_date", chunk.fetchedAt().toString());
+        Map<String, Object> page = new LinkedHashMap<>();
+        page.put("type", "web");
+        page.put("url", chunk.sourceUrl());
+        page.put("title", chunk.pageTitle());
+        page.put("fetch_date", chunk.fetchedAt().toString());
+        if (chunk.pdfPageNumber() != null) {
+            page.put("pdf_page_number", chunk.pdfPageNumber());
+            page.put("content_type", "application/pdf");
+        }
+        metadata.put("page", page);
         metadata.put("source_url", chunk.sourceUrl());
         metadata.put("page_title", chunk.pageTitle());
         metadata.put("chunk_index", globalChunkIndex);

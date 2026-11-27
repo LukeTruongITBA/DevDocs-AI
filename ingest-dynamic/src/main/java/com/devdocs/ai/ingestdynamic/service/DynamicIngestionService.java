@@ -2,18 +2,22 @@
 package com.devdocs.ai.ingestdynamic.service;
 
 import com.devdocs.ai.ingestdynamic.chunker.DynamicTextChunker;
+import com.devdocs.ai.ingestdynamic.config.IngestionProperties;
 import com.devdocs.ai.ingestdynamic.client.DocumentServiceClient;
 import com.devdocs.ai.ingestdynamic.dto.CreateDocumentRequest;
 import com.devdocs.ai.ingestdynamic.dto.CreateDocumentVersionRequest;
 import com.devdocs.ai.ingestdynamic.dto.CrawlFailure;
 import com.devdocs.ai.ingestdynamic.dto.CrawlResult;
 import com.devdocs.ai.ingestdynamic.dto.CrawledPage;
+import com.devdocs.ai.ingestdynamic.dto.DynamicIngestionRequest;
 import com.devdocs.ai.ingestdynamic.dto.DocumentResponse;
 import com.devdocs.ai.ingestdynamic.dto.DocumentVersionResponse;
 import com.devdocs.ai.ingestdynamic.dto.TextChunk;
-import com.devdocs.ai.ingestdynamic.embedding.GeminiEmbeddingService;
+import com.devdocs.ai.ingestdynamic.embedding.EmbeddingService;
+import com.devdocs.ai.ingestdynamic.exception.IngestionConflictException;
 import com.devdocs.ai.ingestdynamic.repository.DynamicChunkRepository;
 import com.devdocs.ai.ingestdynamic.util.ChecksumUtils;
+import com.devdocs.ai.ingestdynamic.util.UrlLogSanitizer;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,22 +33,97 @@ public class DynamicIngestionService {
 
     private final WebsiteCrawler websiteCrawler;
     private final DynamicTextChunker textChunker;
-    private final GeminiEmbeddingService embeddingService;
+    private final EmbeddingService embeddingService;
     private final DocumentServiceClient documentServiceClient;
     private final DynamicChunkRepository chunkRepository;
+    private final IngestionProperties properties;
 
     public DynamicIngestionService(
             WebsiteCrawler websiteCrawler,
             DynamicTextChunker textChunker,
-            GeminiEmbeddingService embeddingService,
+            EmbeddingService embeddingService,
             DocumentServiceClient documentServiceClient,
-            DynamicChunkRepository chunkRepository
+            DynamicChunkRepository chunkRepository,
+            IngestionProperties properties
     ) {
         this.websiteCrawler = websiteCrawler;
         this.textChunker = textChunker;
         this.embeddingService = embeddingService;
         this.documentServiceClient = documentServiceClient;
         this.chunkRepository = chunkRepository;
+        this.properties = properties;
+    }
+
+    public BatchIngestionResult ingestBatch(
+            List<DynamicIngestionRequest> sources
+    ) {
+        if (sources == null || sources.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "At least one dynamic source is required."
+            );
+        }
+
+        if (sources.size() > properties.maxBatchSources()) {
+            throw new IllegalArgumentException(
+                    "Dynamic ingestion batch exceeds the configured source limit of "
+                            + properties.maxBatchSources() + "."
+            );
+        }
+
+        log.info("Starting dynamic ingestion batch: sourceCount={}",
+                sources.size());
+        List<SourceIngestionResult> results = new ArrayList<>();
+
+        for (DynamicIngestionRequest source : sources) {
+            String sourceUrl = source.websiteUrl();
+            try {
+                IngestionResult result = ingest(
+                        sourceUrl,
+                        source.explicitVersion()
+                );
+                results.add(new SourceIngestionResult(
+                        sourceUrl, true, result, null
+                ));
+            } catch (Exception exception) {
+                String message = safeFailureMessage(exception);
+                log.warn(
+                        "Dynamic ingestion batch source failed: url={}, reason={}",
+                        UrlLogSanitizer.sanitize(sourceUrl),
+                        message
+                );
+                results.add(new SourceIngestionResult(
+                        sourceUrl, false, null, message
+                ));
+            }
+        }
+
+        long succeeded = results.stream()
+                .filter(SourceIngestionResult::succeeded)
+                .count();
+        int failed = results.size() - (int) succeeded;
+        log.info(
+                "Dynamic ingestion batch completed: sourceCount={}, "
+                        + "succeeded={}, failed={}",
+                results.size(), succeeded, failed
+        );
+        return new BatchIngestionResult(
+                results.size(), (int) succeeded, failed, results
+        );
+    }
+
+    private String safeFailureMessage(Exception exception) {
+        if (exception instanceof org.springframework.web.client.RestClientResponseException response) {
+            return "External service returned HTTP "
+                    + response.getStatusCode().value() + ".";
+        }
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            return "Source failed with "
+                    + exception.getClass().getSimpleName() + ".";
+        }
+        return message.length() > 400
+                ? message.substring(0, 400)
+                : message;
     }
 
     public IngestionResult ingest(
@@ -56,11 +135,17 @@ public class DynamicIngestionService {
         CrawlResult crawlResult =
                 websiteCrawler.crawl(websiteUrl, explicitVersion);
 
-        // 2. Reject incomplete crawls before modifying any data.
+        // A source is only successful when its full configured scope was
+        // fetched. Batch isolation is handled by ingestBatch around this call.
         if (!crawlResult.complete()) {
-            log.warn("Rejected web ingestion because the crawl was incomplete: fetchedPages={}, retainedPages={}, failedPages={}, pendingPages={}",
+            log.warn(
+                    "Rejecting incomplete dynamic source: fetchedPages={}, "
+                            + "retainedPages={}, failedPages={}, "
+                            + "pendingPages={}, maxPagesReached={}",
                     crawlResult.fetchedPages(), crawlResult.pages().size(),
-                    crawlResult.failures().size(), crawlResult.pendingPages());
+                    crawlResult.failures().size(), crawlResult.pendingPages(),
+                    crawlResult.maxPagesReached()
+            );
             String failureDetails = crawlResult.failures()
                     .stream()
                     .limit(3)
@@ -71,7 +156,7 @@ public class DynamicIngestionService {
                     .orElse("No individual page failures recorded.");
 
             throw new IllegalStateException(
-                    "Website crawl is incomplete. "
+                    "Dynamic source was incomplete and was not persisted. "
                             + "Fetched pages: " + crawlResult.fetchedPages()
                             + ", retained pages: " + crawlResult.pages().size()
                             + ", failed pages: " + crawlResult.failures().size()
@@ -84,6 +169,32 @@ public class DynamicIngestionService {
 
         List<CrawledPage> pages = crawlResult.pages();
 
+        long extractedCharacters = pages.stream()
+                .mapToLong(page -> page.page().content().length())
+                .sum();
+        if (extractedCharacters > properties.maxExtractedCharacters()) {
+            throw new IllegalArgumentException(
+                    "Extracted content exceeds the configured character limit of "
+                            + properties.maxExtractedCharacters() + "."
+            );
+        }
+
+        List<TextChunk> chunks = new ArrayList<>();
+        for (CrawledPage page : pages) {
+            chunks.addAll(textChunker.chunk(page));
+        }
+        if (chunks.isEmpty()) {
+            throw new IllegalStateException(
+                    "Website ingestion produced no text chunks."
+            );
+        }
+        if (chunks.size() > properties.maxChunksPerSource()) {
+            throw new IllegalArgumentException(
+                    "Ingestion exceeds the configured chunk limit of "
+                            + properties.maxChunksPerSource() + "."
+            );
+        }
+
         // 3. Read the detected website version.
         String versionLabel = pages.get(0).version();
 
@@ -91,29 +202,17 @@ public class DynamicIngestionService {
         String checksum =
                 ChecksumUtils.websiteSnapshotChecksum(pages);
 
-        // 5. Create or reuse the WEB document.
+        // 5. Read the document without invoking the document-service upsert.
         String normalizedUrl = pages.get(0).page().sourceUrl();
 
         DocumentResponse document =
-                documentServiceClient.createDocument(
-                        new CreateDocumentRequest(
-                                pages.get(0).page().title(),
-                                "WEB",
-                                normalizedUrl
-                        )
-                );
-
-        if (document == null || document.id() == null) {
-            throw new IllegalStateException(
-                    "Document Service returned an invalid document."
-            );
-        }
-
-        Long documentId = document.id();
+                documentServiceClient.findDocumentBySourceUri(normalizedUrl);
+        Long documentId = document == null ? null : document.id();
 
         // 6. Check whether this version already has the same content.
-        List<DocumentVersionResponse> versions =
-                documentServiceClient.findVersions(documentId);
+        List<DocumentVersionResponse> versions = documentId == null
+                ? List.of()
+                : documentServiceClient.findVersions(documentId);
 
         DocumentVersionResponse existingVersion = versions.stream()
                 .filter(version ->
@@ -122,7 +221,10 @@ public class DynamicIngestionService {
                 .orElse(null);
 
         if (existingVersion != null
-                && checksum.equalsIgnoreCase(existingVersion.checksum())) {
+                && checksum.equalsIgnoreCase(existingVersion.checksum())
+                && chunkRepository.hasMatchingChunks(
+                        existingVersion.id(), chunks
+                )) {
 
             log.info("Skipped unchanged web ingestion: documentId={}, versionId={}, pages={}",
                     documentId, existingVersion.id(), pages.size());
@@ -134,28 +236,60 @@ public class DynamicIngestionService {
                     checksum,
                     pages.size(),
                     0,
-                    true
+                    true,
+                    crawlResult.failures()
             );
         }
 
-        // 7. Chunk all crawled pages.
-        List<TextChunk> chunks = new ArrayList<>();
-
-        for (CrawledPage page : pages) {
-            chunks.addAll(textChunker.chunk(page));
-        }
-
-        if (chunks.isEmpty()) {
-            throw new IllegalStateException(
-                    "Website ingestion produced no text chunks."
+        if (document != null) {
+            log.warn(
+                    "Rejecting conflicting web ingestion without modifying "
+                            + "existing data: documentId={}, versionId={}, "
+                            + "version={}, source={}",
+                    documentId,
+                    existingVersion == null ? null : existingVersion.id(),
+                    versionLabel,
+                    UrlLogSanitizer.sanitize(normalizedUrl)
+            );
+            throw new IngestionConflictException(
+                    "An existing source conflicts with this snapshot; "
+                            + "no existing records were modified."
             );
         }
 
-        // 8. Generate embeddings before modifying version/chunk data.
+        // 8. Generate embeddings before creating any new database records.
         List<float[]> embeddings =
                 embeddingService.embed(chunks);
 
-        // 9. Create or update version metadata.
+        if (embeddingService.isOllama() && !embeddingService.persistenceReady()) {
+            throw new IllegalStateException(
+                    "Ollama embeddings require the pending VECTOR(768) dual-column migration; "
+                            + "no chunks were persisted."
+            );
+        }
+
+        // 9. Create a new WEB document only after extraction and embedding
+        // have succeeded. A concurrent source collision fails safely at the
+        // document service's unique constraint instead of replacing data.
+        if (document == null) {
+            document = documentServiceClient.createDocument(
+                    new CreateDocumentRequest(
+                            pages.get(0).page().title(),
+                            "WEB",
+                            normalizedUrl
+                    )
+            );
+
+            if (document == null || document.id() == null) {
+                throw new IllegalStateException(
+                        "Document Service returned an invalid document."
+                );
+            }
+
+            documentId = document.id();
+        }
+
+        // 10. Create version metadata. Existing sources were rejected above.
         DocumentVersionResponse version =
                 documentServiceClient.createVersion(
                         documentId,
@@ -171,8 +305,8 @@ public class DynamicIngestionService {
             );
         }
 
-        // 10. Replace chunks for this version.
-        chunkRepository.replaceChunks(
+        // 11. Insert chunks for this newly-created version.
+        chunkRepository.insertChunks(
                 documentId,
                 version.id(),
                 chunks,
@@ -189,14 +323,15 @@ public class DynamicIngestionService {
                 checksum,
                 pages.size(),
                 chunks.size(),
-                false
+                false,
+                crawlResult.failures()
         );
     }
 
     private String formatFailure(CrawlFailure failure) {
         return failure.stage()
                 + " at "
-                + failure.url()
+                + UrlLogSanitizer.sanitize(failure.url())
                 + ": "
                 + failure.message();
     }
@@ -208,7 +343,43 @@ public class DynamicIngestionService {
             String checksum,
             int pagesCrawled,
             int chunksStored,
-            boolean skipped
+            boolean skipped,
+            List<CrawlFailure> failures
     ) {
+        public IngestionResult(
+                Long documentId,
+                Long versionId,
+                String versionLabel,
+                String checksum,
+                int pagesCrawled,
+                int chunksStored,
+                boolean skipped
+        ) {
+            this(documentId, versionId, versionLabel, checksum,
+                    pagesCrawled, chunksStored, skipped, List.of());
+        }
+
+        public IngestionResult {
+            failures = List.copyOf(failures);
+        }
+    }
+
+    public record SourceIngestionResult(
+            String sourceUrl,
+            boolean succeeded,
+            IngestionResult ingestion,
+            String error
+    ) {
+    }
+
+    public record BatchIngestionResult(
+            int sourceCount,
+            int succeeded,
+            int failed,
+            List<SourceIngestionResult> results
+    ) {
+        public BatchIngestionResult {
+            results = List.copyOf(results);
+        }
     }
 }

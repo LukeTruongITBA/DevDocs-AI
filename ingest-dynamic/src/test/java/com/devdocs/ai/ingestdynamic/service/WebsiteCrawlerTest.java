@@ -4,8 +4,10 @@ package com.devdocs.ai.ingestdynamic.service;
 import com.devdocs.ai.ingestdynamic.config.IngestionProperties;
 import com.devdocs.ai.ingestdynamic.dto.CrawlFailureStage;
 import com.devdocs.ai.ingestdynamic.dto.CrawlResult;
+import com.devdocs.ai.ingestdynamic.dto.CrawledPage;
 import com.devdocs.ai.ingestdynamic.extractor.HtmlContentExtractor;
 import com.devdocs.ai.ingestdynamic.fetcher.WebsiteFetcher;
+import com.devdocs.ai.ingestdynamic.fetcher.GitHubDocsFetcher;
 import com.devdocs.ai.ingestdynamic.exception.WebsiteFetchException;
 import com.devdocs.ai.ingestdynamic.version.VersionDetector;
 import org.jsoup.Jsoup;
@@ -17,6 +19,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -28,6 +36,9 @@ class WebsiteCrawlerTest {
     @Mock
     private WebsiteFetcher websiteFetcher;
 
+    @Mock
+    private GitHubDocsFetcher gitHubDocsFetcher;
+
     private WebsiteCrawler websiteCrawler;
 
     @BeforeEach
@@ -36,7 +47,8 @@ class WebsiteCrawlerTest {
                 websiteFetcher,
                 new HtmlContentExtractor(),
                 new VersionDetector(),
-                new IngestionProperties(1000, 200, 10, 20)
+                new IngestionProperties(1000, 200, 10, 20),
+                gitHubDocsFetcher
         );
     }
 
@@ -66,6 +78,160 @@ class WebsiteCrawlerTest {
 
         verify(websiteFetcher, times(1))
                 .fetch("https://docs.example.com/3.6/");
+    }
+
+    @Test
+    void shouldRejectPageThatExceedsExtractedCharacterLimit()
+            throws IOException {
+        websiteCrawler = new WebsiteCrawler(
+                websiteFetcher,
+                new HtmlContentExtractor(),
+                new VersionDetector(),
+                new IngestionProperties(1000, 200, 10, 20,
+                        4, 10, 200),
+                gitHubDocsFetcher
+        );
+        when(websiteFetcher.fetch("https://docs.example.com/guide/"))
+                .thenReturn(createDocument(
+                        "https://docs.example.com/guide/",
+                        "<html><head><title>Guide 1</title></head>"
+                                + "<body><main><h1>Guide</h1>"
+                                + "<p>This content exceeds the limit.</p>"
+                                + "</main></body></html>"
+                ));
+
+        CrawlResult result = websiteCrawler.crawl(
+                "https://docs.example.com/guide/", "1"
+        );
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.failures()).hasSize(1);
+        assertThat(result.failures().getFirst().stage())
+                .isEqualTo(CrawlFailureStage.LIMIT);
+        assertThat(result.complete()).isFalse();
+    }
+
+    @Test
+    void shouldExtractRemotePdfAsAnInternetSource() throws Exception {
+        byte[] pdf = createPdf("Remote PDF documentation content.");
+        when(websiteFetcher.fetchPdf("https://files.example.org/guide.pdf"))
+                .thenReturn(pdf);
+
+        CrawlResult result = websiteCrawler.crawl(
+                "https://files.example.org/guide.pdf",
+                "1.0"
+        );
+
+        assertThat(result.pages()).hasSize(1);
+        assertThat(result.pages().getFirst().page().title())
+                .isEqualTo("guide.pdf");
+        assertThat(result.pages().getFirst().page().content())
+                .contains("Remote PDF documentation content.");
+        assertThat(result.pages().getFirst().page().sourceUrl())
+                .isEqualTo("https://files.example.org/guide.pdf");
+        assertThat(result.pages().getFirst().fetchedAt()).isNotNull();
+        assertThat(result.pages().getFirst().pdfPageNumber()).isEqualTo(1);
+        assertThat(result.failures()).isEmpty();
+    }
+
+    @Test
+    void shouldPreserveOneBasedPageNumbersForMultiPagePdf() throws Exception {
+        byte[] pdf = createPdfPages(
+                "PDF page one content.", "PDF page two content."
+        );
+        when(websiteFetcher.fetchPdf("https://files.example.org/multi.pdf"))
+                .thenReturn(pdf);
+
+        CrawlResult result = websiteCrawler.crawl(
+                "https://files.example.org/multi.pdf", "1.0"
+        );
+
+        assertThat(result.pages()).hasSize(2);
+        assertThat(result.fetchedPages()).isEqualTo(2);
+        assertThat(result.pages())
+                .extracting(CrawledPage::pdfPageNumber)
+                .containsExactly(1, 2);
+        assertThat(result.pages())
+                .extracting(page -> page.page().content())
+                .containsExactly("PDF page one content.", "PDF page two content.");
+        assertThat(result.complete()).isTrue();
+    }
+
+    @Test
+    void shouldSkipPdfPageContainingOnlyPrintedPageNumber()
+            throws Exception {
+        byte[] pdf = createPdfPages(
+                "PDF page one content.", "2", "PDF page three content."
+        );
+        when(websiteFetcher.fetchPdf("https://files.example.org/footer.pdf"))
+                .thenReturn(pdf);
+
+        CrawlResult result = websiteCrawler.crawl(
+                "https://files.example.org/footer.pdf", "1.0"
+        );
+
+        assertThat(result.pages()).hasSize(2);
+        assertThat(result.pages())
+                .extracting(CrawledPage::pdfPageNumber)
+                .containsExactly(1, 3);
+        assertThat(result.pages())
+                .extracting(page -> page.page().content())
+                .containsExactly(
+                        "PDF page one content.",
+                        "PDF page three content."
+                );
+        assertThat(result.complete()).isTrue();
+    }
+
+    @Test
+    void shouldDispatchGitHubDocsDirectoryToRepositoryFetcher() throws Exception {
+        String sourceUrl =
+                "https://github.com/example/project/tree/main/docs";
+        CrawledPage page = new CrawledPage(
+                new com.devdocs.ai.ingestdynamic.extractor.ExtractedPage(
+                        "guide.md", "https://raw.githubusercontent.com/example/"
+                        + "project/main/docs/guide.md", "Guide content."
+                ),
+                "main"
+        );
+        when(gitHubDocsFetcher.supports(sourceUrl)).thenReturn(true);
+        when(gitHubDocsFetcher.fetch(sourceUrl, null)).thenReturn(
+                new GitHubDocsFetcher.Result(
+                        java.util.List.of(page), java.util.List.of()
+                )
+        );
+
+        CrawlResult result = websiteCrawler.crawl(sourceUrl, null);
+
+        assertThat(result.pages()).containsExactly(page);
+        assertThat(result.complete()).isTrue();
+        verifyNoInteractions(websiteFetcher);
+    }
+
+    private byte[] createPdf(String text) throws IOException {
+        return createPdfPages(text);
+    }
+
+    private byte[] createPdfPages(String... texts) throws IOException {
+        try (PDDocument document = new PDDocument();
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            for (String text : texts) {
+                PDPage page = new PDPage();
+                document.addPage(page);
+                try (PDPageContentStream stream =
+                             new PDPageContentStream(document, page)) {
+                    stream.beginText();
+                    stream.setFont(new PDType1Font(
+                            Standard14Fonts.FontName.HELVETICA
+                    ), 12);
+                    stream.newLineAtOffset(72, 720);
+                    stream.showText(text);
+                    stream.endText();
+                }
+            }
+            document.save(output);
+            return output.toByteArray();
+        }
     }
 
     @Test

@@ -12,8 +12,9 @@ PDF layout reconstruction uses text positions. Repeated large gutters are treate
 
 Every newly persisted chunk must include `doc_id`, `version`, `source`, `page`, `chunk_index`, and `checksum`. `source_type` is also stored to distinguish the page representation:
 
-- PDF chunks use a positive, one-based integer for `page`, matching the database `page_number` column.
-- Web chunks use an object such as `{"type":"web","url":"https://docs.example/page","title":"Page title"}`. The database `page_number` remains SQL `NULL` for web content.
+- Static PDF chunks use a positive, one-based integer for `page`, matching the database `page_number` column.
+- Web chunks use an object such as `{ "type": "web", "url": "https://docs.example/page", "title": "Page title" }`. The database `page_number` remains SQL `NULL` for web content.
+- Remote PDFs ingested by `ingest-dynamic` use the existing dynamic `source_type=WEB` schema required by migration V3. Their `page` object retains the original one-based PDF page in `pdf_page_number` (for example, `{"type":"web","url":"https://files.example/guide.pdf","title":"guide.pdf","content_type":"application/pdf","pdf_page_number":2}`). SQL `page_number` remains `NULL` for compatibility with that constraint.
 - `checksum` is the lower-case SHA-256 checksum of the exact chunk text. `chunk_index` is zero-based within the document version.
 
 Migration `V3__enforce_chunk_metadata_contract.sql` backfills existing rows from their authoritative document/version/chunk columns, then adds a validated check constraint. For web rows, the backfill uses the stored source URL and page title to create the web `page` object. This repository change does not alter a database. Do not apply the migration to a shared database without approval and a backup/rollback plan.
@@ -31,6 +32,10 @@ The compose file reads `.env` from the project root. Copy `.env.example` to `.en
 | `EMBEDDING_MODEL` | `models/gemini-embedding-001` | Gemini embedding model. |
 | `EMBEDDING_DIMENSIONS` | `1536` | Must remain 1536 because PostgreSQL uses `VECTOR(1536)`. |
 | `EMBEDDING_BATCH_SIZE` | `64` | Number of chunks per embedding request batch. |
+| `EMBEDDING_MAX_ATTEMPTS` | `1` | Maximum attempts per embedding batch; retries are disabled by default pending provider quota evidence. |
+| `EMBEDDING_INITIAL_BACKOFF_MILLIS` | `250` | Initial bounded retry backoff when retries are explicitly enabled. |
+| `EMBEDDING_MAX_BACKOFF_MILLIS` | `2000` | Maximum retry backoff; the application rejects values above 60 seconds. |
+| `EMBEDDING_JITTER_RATIO` | `0.2` | Bounded random backoff jitter from 0 through 1. |
 | `POSTGRES_DB` | `devdocs` | Local database name. |
 | `POSTGRES_USER` | `devdocs` | Local database user. |
 | `POSTGRES_PASSWORD` | unset in example | Set a local database password in `.env`. |
@@ -81,7 +86,7 @@ On 2026-11-26, `compliance_responsibilities.pdf` (table sample) and the separate
 
 The reproducible 20-chunk manual review and per-chunk results are recorded in [the Story 1 Task 1 manual review](docs/story1-task1-manual-review.md). V3 was applied transactionally after a validated custom-format database backup. Publish the task changes, test results, and evidence to GitHub for professor review; no separate live demonstration is required unless requested, and no Product Owner acceptance is claimed here.
 
-### Automated test results
+### Story 1 baseline automated test results
 
 The following module test results were obtained on 2026-11-26:
 
@@ -114,3 +119,90 @@ For this project, GPT/Codex performs code review and verification during AI exec
 
 - GPT/Codex review and verification covers production extraction order, metadata validation, migration compatibility, embedding dimensions, idempotency/race handling, logs, and tests. Publish the task changes and evidence to GitHub for professor review.
 - The production ingestion, metadata, embedding, retry, and 20-chunk review evidence above is available for Product Owner/professor review through GitHub after publication. Record Product Owner acceptance only if it is explicitly provided; a separate live demonstration is not required unless the professor requests one.
+
+## Story 2 – Task 1: Internet ingestion
+
+### Professor's Acceptance Criteria
+
+1. "A web page, a remote PDF and one third-party repository's docs are ingested successfully."
+2. "Boilerplate (navigation, footers, cookie banners) is removed."
+3. "Source URL and fetch date are stored in the metadata."
+4. "One failed source is logged and does not stop the rest of the batch."
+
+### Supported sources and behavior
+
+The existing `POST /api/ingestion/dynamic` endpoint accepts a source URL in `websiteUrl` and an optional `explicitVersion`. The `POST /api/ingestion/dynamic/batch` endpoint accepts up to four independent source requests by default and reports an outcome for each. Its effective limit is configurable with `INGESTION_MAX_BATCH_SOURCES` (maximum allowed configuration: 100). It supports:
+
+```json
+{
+  "websiteUrl": "https://github.com/OWNER/REPOSITORY/tree/BRANCH/docs",
+  "explicitVersion": "BRANCH"
+}
+```
+
+Use the same request shape with a web-page URL or a direct `.pdf` URL.
+
+Batch request example:
+
+```json
+{
+  "sources": [
+    { "websiteUrl": "https://docs.example.org/guide/", "explicitVersion": "1.0" },
+    { "websiteUrl": "https://files.example.org/guide.pdf", "explicitVersion": "1.0" },
+    { "websiteUrl": "https://github.com/OWNER/REPOSITORY/tree/BRANCH/docs", "explicitVersion": "BRANCH" }
+  ]
+}
+```
+
+- HTML pages, crawled within the starting host and path scope. HTML extraction removes script/style content, navigation/header/footer/aside/form elements, and common cookie/consent banners, then prefers `main`, `article`, or the remaining body text.
+- Direct remote PDF URLs ending in `.pdf`. The fetcher requires a PDF response or `%PDF-` signature, limits the response to 5 MiB, and extracts searchable text with PDFBox.
+- Public GitHub repository documentation directories using a URL such as `https://github.com/OWNER/REPOSITORY/tree/BRANCH/docs`, or an individual documentation file under `docs` using a GitHub `blob` URL. The service reads the GitHub repository tree and ingests Markdown, MDX, reStructuredText, text, and HTML files beneath the selected path, up to the configured `max-pages` limit. A branch name is used as the version when `explicitVersion` is omitted.
+
+Dynamic crawl limits are configured with `INGESTION_MAX_PAGES` (default `100`) and `INGESTION_REQUEST_TIMEOUT_SECONDS` (default `20`). Usage limits are `INGESTION_MAX_BATCH_SOURCES` (default `4`), `INGESTION_MAX_EXTRACTED_CHARACTERS` (default `100000` per source), and `INGESTION_MAX_CHUNKS_PER_SOURCE` (default `200`). HTML responses and repository files are individually limited to 5 MiB; remote PDFs are limited to 5 MiB. The service rejects over-limit content without truncating and treating it as successful. Docker Compose passes these values to `ingest-dynamic`; names and defaults are listed in `.env.example`.
+
+Incomplete crawls, repository fetch failures, and limit violations fail that source before document/version/chunk persistence. Batch source failures are logged and represented in that source's result, while processing continues with the next source. A failed source creates no document/version/chunk records unless a later database-stage failure occurs. New-version chunk insertion is transactional; existing versions are rejected before any chunk write. Application logs omit URL user-info, query parameters, and fragments, and do not include document text.
+
+An unchanged version is skipped only when the version checksum matches and a read-only chunk fingerprint check finds the expected contiguous chunk indexes and content checksums in PostgreSQL. If a source document already exists, only that fully matching version is skipped; every other existing-source case returns an explicit conflict before embedding or persistence. A new source uses a create-only document request. Existing chunks are never repaired or replaced implicitly. A retry after an uncertain database failure should still be preceded by a read-only check of the document/version/chunk state.
+
+### Dynamic chunk metadata
+
+Each newly persisted dynamic chunk keeps the shared Story 1 fields `doc_id`, `version`, `source`, `page`, `chunk_index`, and `checksum`. It also stores `fetch_date` as an ISO-8601 UTC timestamp generated from `Instant` (for example, `2026-11-26T12:00:00Z`). The timestamp is present both at the metadata root and inside the `page` object. `source` and `page.url` identify the fetched page or raw repository file URL. A dynamic remote PDF is extracted one physical page at a time; each resulting chunk records that one-based page as `page.pdf_page_number` and identifies the PDF filename and MIME type. This keeps original PDF page provenance while satisfying the existing dynamic WEB metadata constraint.
+
+The running project database currently has 11 pre-existing web chunks without `fetch_date`. Their historical fetch times are not recorded by the old ingestion implementation, so the new code does not invent dates or modify those rows. Any historical remediation needs a separately approved, documented timestamp policy.
+### Read-only source preflight
+
+The production crawler preflight fetched `https://docs.spring.io/spring-framework/reference/core.html` as version `7.1.0` (1 page, 909 extracted characters, 1 chunk). A separate read-only cleanup check reduced the page body text from 14,157 to 909 characters; visible text in four navigation elements, one footer, one header, and two asides did not remain, while the page title and Core Technologies prose remained. That page had no cookie-selector text to remove; cookie-banner removal is covered by automated fixtures. The original Oracle URL `https://download.oracle.com/javaee/6/firstcup/doc/firstcup.pdf` returns HTTP 302 to a different origin and is rejected by the dynamic fetcher. The direct candidate `https://docs.oracle.com/javaee/6/firstcup/doc/firstcup.pdf` returned HTTP 200, `application/pdf`, and 744,452 bytes. Running that URL through the compiled production `WebsiteFetcher`, `WebsiteCrawler`, and `DynamicTextChunker` with the configured limits produced 50 physical pages, 47 retained non-empty pages, 82,365 extracted characters, 115 page-aware chunks, and no failures. Pages 10, 24, and 48 contained only standalone printed page numbers and are treated as blank footer artifacts; later pages retain their original physical page numbers. Page 1 contains genuine 89-character title metadata. The `.invalid` failure source fails at DNS resolution, as intended. Its version is `1`, the default used by `WebsiteCrawler.crawlRemotePdf` when no explicit version is supplied. The pinned MkDocs user-guide scope `https://github.com/mkdocs/mkdocs/tree/2862536793b3c67d9d83c33e0dd6d50a791928f8/docs/user-guide` produced 9 files, 95,435 characters, and 123 chunks without failures. The full pinned `/docs` tree exceeded the 100,000-character cap and was rejected; the production request therefore uses the bounded `docs/user-guide` subtree at the same immutable commit. These are source/extraction preflight results only, not database, embedding, or production-ingestion evidence.
+
+
+
+
+### Tests and verification status
+
+The full dynamic-ingestion module suite passed freshly on 2026-11-27: 126 tests, 0 failures, 0 errors, 0 skipped. The document-service regression suite passed with 15 tests, 0 failures, 0 errors, 0 skipped. These runs include PDF per-page provenance, standalone-page-number cleanup, source conflict protection, batch failure-isolation, configuration binding, bounded retry, interruption, and sanitized 429-diagnostic tests.
+
+| Module | Tests | Failures | Errors | Skipped |
+|---|---:|---:|---:|---:|
+| ingest-dynamic | 126 | 0 | 0 | 0 |
+| document-service | 15 | 0 | 0 | 0 |
+
+Automated extraction, metadata serialization, bounded input, batch failure behavior, and conflict handling without chunk deletion are covered. Production persistence for the three source types remains unverified until the approval-gated run below is completed.
+
+Run the suite from the repository root:
+
+```powershell
+.\mvnw.cmd -f ingest-dynamic\pom.xml test
+```
+
+The tests use generated PDFs, local HTTP servers, mocked dependencies, and a local GitHub API fixture. They verify extraction, metadata serialization, and failure isolation, but they do not prove production database persistence or billable embedding generation. Production ingestion of the three source types and database verification remain pending approval because that operation writes to the configured database and calls Gemini.
+
+Focused test cases include `shouldExtractContentFromMainAndRemoveUnwantedElements`, `shouldExtractRemotePdfAsAnInternetSource`, `fetchesRepositoryMarkdownDocumentsAndUsesBranchAsVersion`, `recordsOneFailedDocumentAndContinuesFetchingOtherDocuments`, `shouldRejectPartialCrawlWithoutPersistingTruncatedSource`, `shouldRejectConflictingExistingVersionWithoutReplacingChunks`, and `shouldContinueBatchAfterOneSourceFails`. The log-sanitization test is `removesCredentialsQueryAndFragmentBeforeLogging`.
+
+### Common Baseline
+
+1. "Code is peer-reviewed and merged to the main branch."
+2. "Automated tests pass, with at least one test for the success path and one for a failure path."
+3. "No secrets in the repository, and configuration is documented."
+4. "Errors and key events are logged."
+5. "The README or docs are updated, and the result is demonstrated to the product owner."
+
+GPT/Codex reviewed the implementation and focused test changes. The automated module tests pass as reported above. Runtime ingestion, database evidence, and GitHub publication are still outstanding; no Product Owner acceptance is claimed.

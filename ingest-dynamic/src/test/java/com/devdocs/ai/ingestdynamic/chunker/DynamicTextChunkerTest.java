@@ -71,6 +71,26 @@ class DynamicTextChunkerTest {
     }
 
     @Test
+    void shouldPreservePdfPageNumberOnEveryChunk() {
+        CrawledPage page = new CrawledPage(
+                new ExtractedPage(
+                        "manual.pdf", "https://docs.example.com/manual.pdf",
+                        "PDF documentation ".repeat(120)
+                ),
+                "1",
+                java.time.Instant.parse("2026-11-26T10:00:00Z"),
+                7
+        );
+
+        List<TextChunk> chunks = chunker.chunk(page);
+
+        assertThat(chunks).isNotEmpty();
+        assertThat(chunks).allSatisfy(chunk ->
+                assertThat(chunk.pdfPageNumber()).isEqualTo(7)
+        );
+    }
+
+    @Test
     void shouldAssignSequentialChunkIndexes() {
         CrawledPage page = createPage(
                 "documentation ".repeat(300)

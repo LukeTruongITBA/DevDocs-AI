@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.util.List;
+import java.util.Objects;
 
 @Component
 public class DocumentServiceClient {
@@ -31,10 +32,39 @@ public class DocumentServiceClient {
             CreateDocumentRequest request
     ) {
         return restClient.post()
-                .uri("/api/documents")
+                .uri(uriBuilder -> uriBuilder
+                        .path("/api/documents")
+                        .queryParam("rejectExisting", true)
+                        .build())
                 .body(request)
                 .retrieve()
                 .body(DocumentResponse.class);
+    }
+
+    /**
+     * Reads the existing document for a source without invoking the document
+     * service's upsert endpoint.
+     */
+    public DocumentResponse findDocumentBySourceUri(String sourceUri) {
+        List<DocumentResponse> documents = restClient.get()
+                .uri("/api/documents")
+                .retrieve()
+                .body(new ParameterizedTypeReference<
+                        List<DocumentResponse>
+                        >() {});
+
+        if (documents == null) {
+            return null;
+        }
+
+        return documents.stream()
+                .filter(Objects::nonNull)
+                .filter(document -> "WEB".equalsIgnoreCase(
+                        document.sourceType()
+                ))
+                .filter(document -> sourceUri.equals(document.sourceUri()))
+                .findFirst()
+                .orElse(null);
     }
 
     public DocumentVersionResponse createVersion(

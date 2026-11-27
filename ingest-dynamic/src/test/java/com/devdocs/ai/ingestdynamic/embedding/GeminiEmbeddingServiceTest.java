@@ -11,8 +11,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
+import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -130,6 +132,191 @@ class GeminiEmbeddingServiceTest {
         assertThrows(
                 IllegalStateException.class,
                 () -> service.embed(List.of(chunk(0, "Test")))
+        );
+    }
+
+    @Test
+    void shouldParseAndSanitizeRateLimitDiagnostics() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(429)
+                .setHeader("Retry-After", "3")
+                .setHeader("X-Goog-Request-Id", "request-123")
+                .setHeader("X-RateLimit-Remaining", "0")
+                .setBody("""
+                        {
+                          "error": {
+                            "status": "RESOURCE_EXHAUSTED",
+                            "message": "API key=secret-key token=secret-token"
+                          }
+                        }
+                        """));
+
+        GeminiEmbeddingException exception = assertThrows(
+                GeminiEmbeddingException.class,
+                () -> service.embed(List.of(chunk(0, "Test")))
+        );
+
+        assertEquals(429, exception.statusCode());
+        assertEquals("RESOURCE_EXHAUSTED", exception.providerCode());
+        assertEquals("3", exception.retryAfter());
+        assertEquals(3_000L, exception.retryAfterMillis());
+        assertEquals("request-123", exception.requestId());
+        assertEquals(
+                "0",
+                exception.rateLimitHeaders().get("X-RateLimit-Remaining")
+        );
+        assertTrue(exception.providerMessage().contains("[REDACTED]"));
+        assertFalse(exception.getMessage().contains("secret-key"));
+        assertFalse(exception.getMessage().contains("secret-token"));
+    }
+
+    @Test
+    void shouldRetryConfiguredTransientFailureAndRespectRetryAfter() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(429)
+                .setHeader("Retry-After", "0")
+                .setBody("{\"error\":{\"status\":\"RESOURCE_EXHAUSTED\"}}"));
+        mockWebServer.enqueue(jsonResponse(responseWithVector(0.4f)));
+        List<Long> delays = new ArrayList<>();
+
+        GeminiEmbeddingService retryingService = service(
+                2,
+                100,
+                500,
+                0,
+                delays::add
+        );
+
+        List<float[]> result = retryingService.embed(
+                List.of(chunk(0, "Retryable"))
+        );
+
+        assertEquals(1, result.size());
+        assertEquals(0.4f, result.get(0)[0], 0.0001f);
+        assertEquals(List.of(0L), delays);
+        assertEquals(2, mockWebServer.getRequestCount());
+    }
+
+    @Test
+    void shouldBoundConfiguredRetryAttempts() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(503)
+                .setBody("{\"message\":\"temporarily unavailable\"}"));
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(503)
+                .setBody("{\"message\":\"temporarily unavailable\"}"));
+
+        GeminiEmbeddingService retryingService = service(
+                2,
+                0,
+                0,
+                0,
+                ignored -> { }
+        );
+
+        assertThrows(
+                GeminiEmbeddingException.class,
+                () -> retryingService.embed(List.of(chunk(0, "Retry")))
+        );
+
+        assertEquals(2, mockWebServer.getRequestCount());
+    }
+
+    @Test
+    void shouldNotRetryPermanentClientErrors() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(400)
+                .setBody("{\"error\":{\"code\":\"INVALID_ARGUMENT\"}}"));
+
+        GeminiEmbeddingService retryingService = service(
+                4,
+                0,
+                0,
+                0,
+                ignored -> { }
+        );
+
+        GeminiEmbeddingException exception = assertThrows(
+                GeminiEmbeddingException.class,
+                () -> retryingService.embed(List.of(chunk(0, "Invalid")))
+        );
+
+        assertFalse(exception.retryable());
+        assertEquals(1, mockWebServer.getRequestCount());
+    }
+
+    @Test
+    void shouldHandleInterruptedRetryAndRestoreInterruptFlag() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(429)
+                .setBody("{\"error\":{\"status\":\"RESOURCE_EXHAUSTED\"}}"));
+
+        GeminiEmbeddingService retryingService = service(
+                2,
+                10,
+                100,
+                0,
+                ignored -> {
+                    throw new InterruptedException("cancelled");
+                }
+        );
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> retryingService.embed(List.of(chunk(0, "Cancel")))
+        );
+
+        assertEquals(
+                "Gemini embedding retry was interrupted.",
+                exception.getMessage()
+        );
+        assertTrue(Thread.currentThread().isInterrupted());
+        Thread.interrupted();
+    }
+
+    @Test
+    void shouldUseBoundedGenericMessageForUnparseableErrorBody() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(500)
+                .setBody("x".repeat(9_000)));
+
+        GeminiEmbeddingException exception = assertThrows(
+                GeminiEmbeddingException.class,
+                () -> service.embed(List.of(chunk(0, "Malformed")))
+        );
+
+        assertEquals(500, exception.statusCode());
+        assertEquals(
+                "Provider error response could not be parsed.",
+                exception.providerMessage()
+        );
+        assertTrue(exception.getMessage().length() < 500);
+    }
+
+    private GeminiEmbeddingService service(
+            int maxAttempts,
+            long initialBackoffMillis,
+            long maxBackoffMillis,
+            double jitterRatio,
+            GeminiEmbeddingService.RetrySleeper sleeper
+    ) {
+        EmbeddingProperties properties = new EmbeddingProperties(
+                mockWebServer.url("/embed").toString(),
+                "test-api-key",
+                "models/gemini-embedding-001",
+                1536,
+                2,
+                maxAttempts,
+                initialBackoffMillis,
+                maxBackoffMillis,
+                jitterRatio
+        );
+        return new GeminiEmbeddingService(
+                properties,
+                RestClient.builder(),
+                new ObjectMapper(),
+                sleeper,
+                () -> 0.5
         );
     }
 
