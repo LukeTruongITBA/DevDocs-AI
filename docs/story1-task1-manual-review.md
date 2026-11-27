@@ -51,3 +51,37 @@ For every selected row, the stored text was compared with the production extract
 - The two-column paper's page 1 extraction follows the left-column introduction into the right-column continuation and then the next section in reading order.
 - The table sample's page 1 extraction retained the table heading/column fields.
 - No source text excerpts are included in this report.
+
+## Ollama re-verification (2026-11-27)
+
+The evidence above was produced on the Gemini path (`chunks.embedding VECTOR(1536)`). After migration V4 added `chunks.embedding_ollama VECTOR(768)`, both samples were re-ingested through the running `ingest-static` container with `EMBEDDING_PROVIDER=ollama` (`nomic-embed-text:137m-v1.5-fp16`).
+
+**Inputs.** The same two source files were used; their SHA-256 values match the registered version checksums:
+
+| Sample | Document / version | SHA-256 (matches `document_versions.checksum`) |
+|---|---|---|
+| `compliance_responsibilities.pdf` | 9 / 8 (`v1`) | `aeb36cf8…63233059` |
+| ACL L16-1570 two-column paper | 10 / 9 (`LREC-2016`) | `685c341a…ce626765` |
+
+**Procedure.** A verified `pg_dump` backup was taken first (`DevDocs-AI-backups/pre-v4-ollama-20261127-174808.dump`, restored into an isolated container with an identical fingerprint). Each PDF was then posted twice to `POST /api/ingestion/static/pdf`. Per version, a fingerprint was recorded before and after each run. It covered chunk IDs, checksums, and the MD5s of the content, metadata and Gemini vector, plus a separate fingerprint over the Ollama vector, model and timestamp.
+
+| Version | Chunks | Gemini vectors | Ollama vectors before → run 1 → run 2 | Content/metadata/Gemini fingerprint | Ollama fingerprint run 1 = run 2 |
+|---|---:|---:|---|---|---|
+| 8 | 5 (IDs 39–43) | 5 | 0 → 5 → 5 | unchanged across all three snapshots | yes |
+| 9 | 39 (IDs 44–82) | 39 | 0 → 39 → 39 | unchanged across all three snapshots | yes |
+
+- Both runs returned HTTP 200 with `alreadyIngested=true`: 4 pages / 5 chunks and 8 pages / 39 chunks, the same counts as the Gemini evidence.
+- Run 1 filled only the NULL `embedding_ollama` values. No chunk was inserted, deleted, or had its content, metadata or Gemini vector changed, and the database total stayed at 75 chunks.
+- Run 2 changed nothing, including `embedding_ollama_created_at`, so re-ingestion is idempotent under Ollama.
+- All 44 Ollama vectors have 768 dimensions and unit L2 norm, are pairwise distinct, and carry model `nomic-embed-text:137m-v1.5-fp16`.
+
+**20-chunk review under Ollama.** The text of the 20 reviewed chunks is byte-identical to the Gemini review, because the content fingerprint is unchanged. The text-level PASS results above therefore still hold. As an embedding-level check, each of the 20 chunks was queried using its own first sentence (≤ 200 characters, `search_query:` prefix), with cosine KNN over `embedding_ollama` within its version:
+
+| Result | Count |
+|---|---:|
+| Chunk ranked 1st | 16 / 20 |
+| Chunk in top 3 | 17 / 20 |
+| Chunk ranked 4–10 | 1 (ID 40, rank 5: table-row fragment) |
+| Chunk not in top 10 | 2 (ID 67: interleaved two-column table text; ID 78: reference-list entry) |
+
+The three weak cases are chunks whose leading text is a table or reference fragment, so a first-sentence query is a poor proxy for them. This is a known extraction-layout limit, not a storage defect. No source text excerpts are included.
