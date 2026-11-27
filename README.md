@@ -40,7 +40,18 @@ The compose file reads `.env` from the project root. Copy `.env.example` to `.en
 | `POSTGRES_USER` | `devdocs` | Local database user. |
 | `POSTGRES_PASSWORD` | unset in example | Set a local database password in `.env`. |
 
-The embedding dimension is intentionally constrained to 1536 in both ingestion services, the vector serializer, and the current database schema. A different dimension requires a coordinated schema migration and re-embedding plan; changing only the environment variable is rejected.
+Embeddings use two independent vector columns. Ollama `nomic-embed-text` (768 dims) is written to `chunks.embedding_ollama VECTOR(768)`; this is the default, and `compose.yaml` uses it. Gemini `gemini-embedding-001` (1536 dims) stays in `chunks.embedding VECTOR(1536)`. Migration `V4__add_ollama_embedding_column.sql` adds the Ollama column additively; see [docs/ollama-embedding.md](docs/ollama-embedding.md). Each provider validates its own dimension count, and pre-retrieval routes queries to the matching column.
+
+## Story status (2026-11-27)
+
+| Story / task | Record |
+|---|---|
+| Story 1 Task 1, PDF ingestion (re-verified under Ollama) | [docs/story1-task1-manual-review.md](docs/story1-task1-manual-review.md) |
+| Story 2 Task 1, Internet ingestion (production batch under Ollama) | [docs/story2-task1-implementation.md](docs/story2-task1-implementation.md) |
+| Story 3 Task 1, Safe metadata filtering (with Postman collection) | [docs/story3-task1-metadata-filtering.md](docs/story3-task1-metadata-filtering.md) |
+| Story 4 Task 1, Cross-encoder reranker (golden-set benchmark) | [docs/story4-task1-reranker.md](docs/story4-task1-reranker.md) |
+
+Running the full stack also starts the `reranker` service: the TEI CPU image plus a pinned cross-encoder, downloaded on first start, which uses about 3.6 GB RAM. Ollama must be running on the host with `nomic-embed-text:137m-v1.5-fp16` pulled.
 
 ## Running tests
 
