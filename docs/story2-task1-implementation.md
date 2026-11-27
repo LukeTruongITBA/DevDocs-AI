@@ -189,3 +189,24 @@ embedding, metadata, and PDF page-provenance checks. Record the before/after
 counts and retain the response, logs, and SQL output as evidence for AC1-AC4.
 
 **Readiness verdict: READY FOR EXPLICIT PRODUCTION APPROVAL, NOT DONE.** Local blockers are resolved. Production ingestion, Gemini usage, database writes, Docker rebuild/restart, Git publication, and Product Owner demonstration remain outstanding approval or evidence gates.
+
+## Production ingestion under Ollama (2026-11-27)
+
+This supersedes the Gemini 429 blocker above. After migration V4, the dynamic service runs with `EMBEDDING_PROVIDER=ollama` (`nomic-embed-text:137m-v1.5-fp16`, 768 dims, `chunks.embedding_ollama`). The exact four-source payload above was posted to `POST /api/ingestion/dynamic/batch` on the rebuilt containers, after a verified backup (`DevDocs-AI-backups/pre-story2-ollama-batch-20261127-180433.dump`).
+
+| Source | Result run 1 | Document / version | Chunks | Run 2 |
+|---|---|---|---:|---|
+| `https://story2-task1-source-failure.invalid/docs/` | failed: "Website hostname could not be resolved." | none | 0 | failed (same) |
+| Spring Framework `core.html` `7.1.0` | succeeded; existing Gemini chunk matched by checksum, its NULL Ollama vector filled | 11 / 10 | 1 | skipped |
+| Oracle `firstcup.pdf` `1` | succeeded, new | 12 / 11 | 115 | skipped |
+| MkDocs `docs/user-guide` @ `2862536…` | succeeded, new | 13 / 12 | 123 | skipped |
+
+Response run 1: `sourceCount=4, succeeded=3, failed=1`, HTTP 200 in 13.9 s. The failing source was first and did not stop the later sources (**AC4**). Run 2 left a full-table fingerprint unchanged; it covered content, metadata, both vector columns and the Ollama timestamps.
+
+**Database after the run.** There are 11 documents, 11 versions and 313 chunks (previously 9, 9 and 75). Gemini vectors: 75, unchanged; the fingerprint over the original 75 chunks equals the pre-V4 value `637317a5…`. Ollama vectors: 283, covering the 44 Story 1 chunks, the Spring chunk, and 238 new chunks. Thirty older chunks (documents 4, 5 and 8, outside both stories' sample sets) still have only Gemini vectors.
+
+**AC1, three source types.** The web page, the remote PDF and the third-party repository docs are each persisted with Ollama vectors.
+
+**AC3, provenance.** All 239 Story 2 chunks have an ISO-8601 UTC `fetch_date` at both the metadata root and `page.fetch_date`. Spring and Oracle `source_url` equal the document source URI. MkDocs `source_url` is the specific raw file URL at the pinned commit, covering 9 files. The Spring chunk keeps its original 2026-11-26 fetch date, because the backfill does not rewrite metadata. All 115 Oracle chunks have `page.content_type=application/pdf` and a one-based `pdf_page_number` spanning 47 distinct pages from 1 to 50. The missing pages, 10, 24 and 48, are the documented standalone page-number artifacts. SQL `page_number` stays NULL, as V3 requires.
+
+**AC2, boilerplate.** Across the 239 chunks, marker searches found no cookie-consent, "skip to content" or "edit on GitHub" text. The single "All rights reserved" match is Oracle PDF page 2, which is the document's own legal-notice page and is retained as content.
