@@ -1,5 +1,6 @@
 package com.devdocs.ai.preretrieval.reranking.service;
 
+import com.devdocs.ai.preretrieval.reranking.config.RerankingProperties;
 import com.devdocs.ai.preretrieval.reranking.dto.RerankedChunk;
 import com.devdocs.ai.preretrieval.vectorsearch.dto.VectorSearchResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -8,145 +9,112 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class RerankingServiceTest {
 
-    private RerankingService rerankingService;
+    private static final String MODEL = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1@1427fd65";
+
+    private CrossEncoderClient client;
+    private RerankingService service;
+
+    private final List<VectorSearchResult> candidates = List.of(
+            result(1L, "about deployment", 0.90),
+            result(2L, "about configuration", 0.80),
+            result(3L, "about themes", 0.70)
+    );
 
     @BeforeEach
     void setUp() {
-        rerankingService = new RerankingService();
+        client = mock(CrossEncoderClient.class);
+        service = new RerankingService(client, properties(true, 20));
     }
 
     @Test
-    void shouldRerankChunksUsingSimilarityAndKeywordOverlap() {
-        VectorSearchResult chunk1 = createChunk(
-                1L, 0, "Spring Boot simplifies Java development.", 0.90
-        );
+    void reordersCandidatesByCrossEncoderScore() {
+        when(client.score("how to theme", List.of("about deployment", "about configuration", "about themes")))
+                .thenReturn(new double[]{0.10, 0.40, 0.95});
 
-        VectorSearchResult chunk2 = createChunk(
-                2L, 1, "Dependency injection manages object dependencies.", 0.80
-        );
+        RerankingService.RerankResult result = service.rerankWithDetails("how to theme", candidates);
 
-        List<RerankedChunk> results = rerankingService.rerank(
-                "Spring Boot",
-                List.of(chunk1, chunk2)
-        );
-
-        assertEquals(2, results.size());
-        assertEquals(1L, results.get(0).chunk().id());
-        assertEquals(0.93, results.get(0).rerankScore(), 0.0001);
-        assertEquals(1, results.get(0).originalRank());
-
-        assertEquals(2L, results.get(1).chunk().id());
-        assertEquals(0.56, results.get(1).rerankScore(), 0.0001);
-        assertEquals(2, results.get(1).originalRank());
+        assertEquals(RerankingService.STRATEGY_CROSS_ENCODER, result.strategy());
+        assertEquals(MODEL, result.model());
+        assertNull(result.fallbackReason());
+        assertEquals(List.of(3L, 2L, 1L), ids(result.chunks()));
+        assertEquals(List.of(3, 2, 1), result.chunks().stream().map(RerankedChunk::originalRank).toList());
+        assertEquals(0.95, result.chunks().getFirst().rerankScore());
     }
 
     @Test
-    void shouldPromoteChunkWithBetterKeywordOverlap() {
-        VectorSearchResult chunk1 = createChunk(
-                1L, 0, "Java framework documentation.", 0.90
-        );
+    void tiesKeepVectorOrder() {
+        when(client.score(anyString(), anyList())).thenReturn(new double[]{0.5, 0.5, 0.9});
 
-        VectorSearchResult chunk2 = createChunk(
-                2L, 1, "Spring Boot Java framework documentation.", 0.80
-        );
-
-        List<RerankedChunk> results = rerankingService.rerank(
-                "Spring Boot",
-                List.of(chunk1, chunk2)
-        );
-
-        assertEquals(2L, results.get(0).chunk().id());
-        assertEquals(0.86, results.get(0).rerankScore(), 0.0001);
-        assertEquals(2, results.get(0).originalRank());
+        assertEquals(List.of(3L, 1L, 2L), ids(service.rerank("q", candidates)));
     }
 
     @Test
-    void shouldPreserveOriginalRankAfterSorting() {
-        VectorSearchResult chunk1 = createChunk(
-                1L, 0, "Java documentation.", 0.70
-        );
+    void keepsOriginalOrderWhenRerankerFails() {
+        when(client.score(anyString(), anyList()))
+                .thenThrow(new CrossEncoderClient.RerankerUnavailableException("Reranker request failed: ResourceAccessException"));
 
-        VectorSearchResult chunk2 = createChunk(
-                2L, 1, "Spring Boot documentation.", 0.90
-        );
+        RerankingService.RerankResult result = service.rerankWithDetails("q", candidates);
 
-        List<RerankedChunk> results = rerankingService.rerank(
-                "Spring Boot",
-                List.of(chunk1, chunk2)
-        );
-
-        assertEquals(2, results.get(0).originalRank());
-        assertEquals(1, results.get(1).originalRank());
+        assertEquals(RerankingService.STRATEGY_VECTOR_ORDER, result.strategy());
+        assertEquals(List.of(1L, 2L, 3L), ids(result.chunks()));
+        assertEquals(0.90, result.chunks().getFirst().rerankScore());
+        assertTrue(result.fallbackReason().contains("ResourceAccessException"));
+        assertNull(result.model());
     }
 
     @Test
-    void shouldRejectNullQuery() {
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> rerankingService.rerank(null, List.of())
-        );
+    void disabledRerankerKeepsOrderWithoutCallingModel() {
+        RerankingService disabled = new RerankingService(client, properties(false, 20));
+
+        RerankingService.RerankResult result = disabled.rerankWithDetails("q", candidates);
+
+        assertEquals(List.of(1L, 2L, 3L), ids(result.chunks()));
+        assertEquals("reranker disabled", result.fallbackReason());
+        verifyNoInteractions(client);
+        assertEquals(5, disabled.candidateCount(5));
     }
 
     @Test
-    void shouldRejectBlankQuery() {
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> rerankingService.rerank("   ", List.of())
-        );
+    void candidateCountWidensToConfiguredTopNAndCaps() {
+        assertEquals(20, service.candidateCount(5));
+        assertEquals(30, service.candidateCount(30));
+        assertEquals(100, new RerankingService(client, properties(true, 100)).candidateCount(5));
     }
 
     @Test
-    void shouldRejectNullChunks() {
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> rerankingService.rerank("Spring Boot", null)
-        );
+    void emptyCandidatesNeedNoModelCall() {
+        assertEquals(List.of(), service.rerank("q", List.of()));
+        verifyNoInteractions(client);
     }
 
     @Test
-    void shouldRejectNonFiniteSimilarity() {
-        VectorSearchResult chunk = createChunk(
-                1L, 0, "Spring Boot documentation.", Double.NaN
-        );
-
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> rerankingService.rerank("Spring Boot", List.of(chunk))
-        );
+    void rejectsBlankQueryAndNullChunks() {
+        assertThrows(IllegalArgumentException.class, () -> service.rerank(" ", candidates));
+        assertThrows(IllegalArgumentException.class, () -> service.rerank("q", null));
     }
 
-    @Test
-    void shouldReturnEmptyListWhenChunksAreEmpty() {
-        List<RerankedChunk> results = rerankingService.rerank(
-                "Spring Boot",
-                List.of()
-        );
-
-        assertTrue(results.isEmpty());
+    private static RerankingProperties properties(boolean enabled, int candidates) {
+        return new RerankingProperties(enabled, "http://localhost:8086", MODEL, candidates, 1000, 1000);
     }
 
-    private VectorSearchResult createChunk(
-            Long id,
-            Integer chunkIndex,
-            String content,
-            Double similarity
-    ) {
-        return new VectorSearchResult(
-                id,
-                5L,
-                4L,
-                "Spring Boot Reference Documentation",
-                "3.6",
-                "https://docs.spring.io/spring-boot/",
-                chunkIndex,
-                content,
-                1,
-                Map.of("source", "test"),
-                similarity
-        );
+    private static VectorSearchResult result(Long id, String content, double similarity) {
+        return new VectorSearchResult(id, 9L, 5L, "Doc", "1", "src", id.intValue(), content,
+                null, Map.of(), similarity);
+    }
+
+    private static List<Long> ids(List<RerankedChunk> chunks) {
+        return chunks.stream().map(chunk -> chunk.chunk().id()).toList();
     }
 }

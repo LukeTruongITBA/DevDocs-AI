@@ -57,21 +57,29 @@ public class QueryPipelineService {
         List<Double> embedding =
                 queryEmbeddingService.embed(normalization.normalizedQuery());
 
+        // Story 4 Task 1: retrieve a wider top-N, rerank, keep top-k.
+        int candidateCount = rerankingService.candidateCount(request.topK());
+
         VectorSearchRequest searchRequest = new VectorSearchRequest(
                 request.versionId(),
                 embedding,
-                request.topK(),
+                candidateCount,
                 filter
         );
 
         List<VectorSearchResult> results =
                 vectorSearchService.search(searchRequest);
 
-        List<RerankedChunk> rerankedResults =
-                rerankingService.rerank(
-                        normalization.normalizedQuery(),
+        // The cross-encoder reads the user's own wording; synonym expansion
+        // is only for the embedding/keyword stages.
+        RerankingService.RerankResult rerank =
+                rerankingService.rerankWithDetails(
+                        normalization.originalQuery(),
                         results
                 );
+
+        List<RerankedChunk> rerankedResults = rerank.chunks().subList(
+                0, Math.min(request.topK(), rerank.chunks().size()));
 
         List<StitchedContext> stitchedContexts =
                 contextStitchingService.stitch(rerankedResults);
@@ -87,7 +95,10 @@ public class QueryPipelineService {
                 rerankedResults,
                 stitchedContexts,
                 filter == null ? null : new QueryPipelineResponse.AppliedFilter(
-                        filter.mode().name(), filter.describe())
+                        filter.mode().name(), filter.describe()),
+                new QueryPipelineResponse.RerankingInfo(
+                        rerank.strategy(), rerank.model(), results.size(),
+                        rerankedResults.size(), rerank.latencyMs(), rerank.fallbackReason())
         );
     }
 

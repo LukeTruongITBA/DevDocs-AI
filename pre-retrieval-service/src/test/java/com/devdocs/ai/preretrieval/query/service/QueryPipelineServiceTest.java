@@ -137,8 +137,11 @@ class QueryPipelineServiceTest {
         when(vectorSearchService.search(any(VectorSearchRequest.class)))
                 .thenReturn(searchResults);
 
-        when(rerankingService.rerank(normalizedQuery, searchResults))
-                .thenReturn(rerankedResults);
+        when(rerankingService.candidateCount(topK)).thenReturn(20);
+
+        when(rerankingService.rerankWithDetails(originalQuery, searchResults))
+                .thenReturn(new RerankingService.RerankResult(rerankedResults,
+                        RerankingService.STRATEGY_CROSS_ENCODER, "test-model", 7, null));
 
         when(contextStitchingService.stitch(rerankedResults))
                 .thenReturn(stitchedContexts);
@@ -172,11 +175,18 @@ class QueryPipelineServiceTest {
         inOrder.verify(queryEmbeddingService)
                 .embed(normalizedQuery);
 
+        org.mockito.ArgumentCaptor<VectorSearchRequest> searchCaptor =
+                org.mockito.ArgumentCaptor.forClass(VectorSearchRequest.class);
         inOrder.verify(vectorSearchService)
-                .search(any(VectorSearchRequest.class));
+                .search(searchCaptor.capture());
+        assertEquals(20, searchCaptor.getValue().topK(), "retrieves the wider top-N");
 
         inOrder.verify(rerankingService)
-                .rerank(normalizedQuery, searchResults);
+                .rerankWithDetails(originalQuery, searchResults);
+
+        assertEquals("cross-encoder", response.reranking().strategy());
+        assertEquals(1, response.reranking().candidates());
+        verify(rerankingService).candidateCount(topK);
 
         inOrder.verify(contextStitchingService)
                 .stitch(rerankedResults);

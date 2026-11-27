@@ -117,6 +117,8 @@ services:
       EMBEDDING_DIMENSIONS: 768
       EMBEDDING_BATCH_SIZE: ${OLLAMA_EMBEDDING_BATCH_SIZE:-16}
       POST_RETRIEVAL_SERVICE_URL: http://post-retrieval-service:8085
+      RERANKER_URL: ${RERANKER_URL:-http://reranker:80}
+      RERANKER_CANDIDATE_COUNT: ${RERANKER_CANDIDATE_COUNT:-20}
     ports:
       - "8084:8084"
     depends_on:
@@ -171,5 +173,20 @@ services:
       - eureka-server
       - document-service
       - pre-retrieval-service
+  reranker:
+    # Story 4 Task 1 cross-encoder. Image and model revision are pinned.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.10@sha256:f0a4bb206b9d4877746b5b9f638e138fe683eeb9787c14d541a12c993b562d86
+    container_name: devdocs-reranker
+    restart: unless-stopped
+    command:
+      - --model-id=cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+      - --revision=1427fd652930e4ba29e8149678df786c240d8825
+      - --auto-truncate
+    ports:
+      - "8086:80"
+    volumes:
+      - devdocs_reranker_models:/data
+
 volumes:
   devdocs_pgdata:
+  devdocs_reranker_models:

@@ -33,3 +33,16 @@ management:
   endpoint:
     health:
       show-details: always
+
+# Story 4 Task 1: cross-encoder reranker (TEI /rerank). The pipeline retrieves
+# candidate-count chunks, reranks, and returns topK. On any reranker failure
+# the vector order is kept.
+---
+app:
+  reranking:
+    enabled: ${RERANKER_ENABLED:true}
+    url: ${RERANKER_URL:http://localhost:8086}
+    model: ${RERANKER_MODEL:cross-encoder/mmarco-mMiniLMv2-L12-H384-v1@1427fd652930e4ba29e8149678df786c240d8825}
+    candidate-count: ${RERANKER_CANDIDATE_COUNT:20}
+    connect-timeout-millis: ${RERANKER_CONNECT_TIMEOUT_MILLIS:2000}
+    read-timeout-millis: ${RERANKER_READ_TIMEOUT_MILLIS:10000}
